@@ -7,11 +7,7 @@ import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import android.util.Log;
 
-import java.io.IOException;
 import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.cert.CertificateException;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -32,7 +28,7 @@ public class SecureStorage {
     }
 
     // -------------------------------------------------------------------------
-    // AES key in Keystore
+    // AES key in Keystore (internal — never exposed outside this class)
     // -------------------------------------------------------------------------
 
     private SecretKey getOrCreateAesKey() throws Exception {
@@ -40,13 +36,11 @@ public class SecureStorage {
         keyStore.load(null);
 
         if (keyStore.containsAlias(CryptoConstants.KEYSTORE_ALIAS)) {
-            // Key already exists — load it
             KeyStore.SecretKeyEntry entry = (KeyStore.SecretKeyEntry)
                     keyStore.getEntry(CryptoConstants.KEYSTORE_ALIAS, null);
             return entry.getSecretKey();
         }
 
-        // Key does not exist — generate it
         KeyGenerator keyGen = KeyGenerator.getInstance(
                 KeyProperties.KEY_ALGORITHM_AES,
                 CryptoConstants.KEYSTORE_PROVIDER
@@ -68,24 +62,22 @@ public class SecureStorage {
     }
 
     // -------------------------------------------------------------------------
-    // Private key — encrypt and save
+    // Own private key — encrypted via AES/Keystore
     // -------------------------------------------------------------------------
 
     public void savePrivateKey(byte[] privateKey) throws Exception {
         SecretKey aesKey = getOrCreateAesKey();
-
         Cipher cipher = Cipher.getInstance(CryptoConstants.AES_MODE);
         cipher.init(Cipher.ENCRYPT_MODE, aesKey);
 
-        byte[] iv = cipher.getIV();
+        byte[] iv        = cipher.getIV();
         byte[] encrypted = cipher.doFinal(privateKey);
 
-        // Store IV + encrypted bytes together, separated by a colon
-        String ivEncoded = Base64.encodeToString(iv, Base64.NO_WRAP);
-        String encEncoded = Base64.encodeToString(encrypted, Base64.NO_WRAP);
+        String ivEnc  = Base64.encodeToString(iv,        Base64.NO_WRAP);
+        String encEnc = Base64.encodeToString(encrypted, Base64.NO_WRAP);
 
         prefs.edit()
-                .putString(CryptoConstants.KEY_PRIVATE_ENCRYPTED, ivEncoded + ":" + encEncoded)
+                .putString(CryptoConstants.KEY_PRIVATE_ENCRYPTED, ivEnc + ":" + encEnc)
                 .apply();
 
         Log.d(TAG, "Private key encrypted and saved");
@@ -101,14 +93,12 @@ public class SecureStorage {
             return null;
         }
 
-        byte[] iv = Base64.decode(parts[0], Base64.NO_WRAP);
+        byte[] iv        = Base64.decode(parts[0], Base64.NO_WRAP);
         byte[] encrypted = Base64.decode(parts[1], Base64.NO_WRAP);
 
         SecretKey aesKey = getOrCreateAesKey();
-
         Cipher cipher = Cipher.getInstance(CryptoConstants.AES_MODE);
-        GCMParameterSpec spec = new GCMParameterSpec(CryptoConstants.GCM_TAG_SIZE, iv);
-        cipher.init(Cipher.DECRYPT_MODE, aesKey, spec);
+        cipher.init(Cipher.DECRYPT_MODE, aesKey, new GCMParameterSpec(CryptoConstants.GCM_TAG_SIZE, iv));
 
         return cipher.doFinal(encrypted);
     }
@@ -118,12 +108,14 @@ public class SecureStorage {
     }
 
     // -------------------------------------------------------------------------
-    // Public key
+    // Own public key
     // -------------------------------------------------------------------------
 
     public void savePublicKey(byte[] publicKey) {
-        String encoded = Base64.encodeToString(publicKey, Base64.NO_WRAP);
-        prefs.edit().putString(CryptoConstants.KEY_PUBLIC, encoded).apply();
+        prefs.edit()
+                .putString(CryptoConstants.KEY_PUBLIC,
+                        Base64.encodeToString(publicKey, Base64.NO_WRAP))
+                .apply();
     }
 
     public byte[] getPublicKey() {
@@ -137,12 +129,20 @@ public class SecureStorage {
     }
 
     // -------------------------------------------------------------------------
-    // Partner key
+    // Partner key + pair status
     // -------------------------------------------------------------------------
 
     public void savePartnerKey(byte[] partnerKey) {
-        String encoded = Base64.encodeToString(partnerKey, Base64.NO_WRAP);
-        prefs.edit().putString(CryptoConstants.KEY_PARTNER, encoded).apply();
+        long timestamp = System.currentTimeMillis();
+
+        prefs.edit()
+                .putString(CryptoConstants.KEY_PARTNER,
+                        Base64.encodeToString(partnerKey, Base64.NO_WRAP))
+                .putLong(CryptoConstants.KEY_PARTNER_TIMESTAMP, timestamp)
+                .putBoolean(CryptoConstants.KEY_IS_PAIRED, true)
+                .apply();
+
+        Log.d(TAG, "Partner key saved — pair status set to true");
     }
 
     public byte[] getPartnerKey() {
@@ -151,7 +151,21 @@ public class SecureStorage {
         return Base64.decode(encoded, Base64.NO_WRAP);
     }
 
-    public boolean hasPartnerKey() {
-        return prefs.contains(CryptoConstants.KEY_PARTNER);
+    public boolean isPaired() {
+        return prefs.getBoolean(CryptoConstants.KEY_IS_PAIRED, false);
+    }
+
+    public long getPartnerTimestamp() {
+        return prefs.getLong(CryptoConstants.KEY_PARTNER_TIMESTAMP, 0L);
+    }
+
+    public void clearPartner() {
+        prefs.edit()
+                .remove(CryptoConstants.KEY_PARTNER)
+                .remove(CryptoConstants.KEY_PARTNER_TIMESTAMP)
+                .putBoolean(CryptoConstants.KEY_IS_PAIRED, false)
+                .apply();
+
+        Log.d(TAG, "Partner key cleared — unpaired");
     }
 }
