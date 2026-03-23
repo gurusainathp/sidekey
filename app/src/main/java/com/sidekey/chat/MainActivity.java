@@ -1,10 +1,18 @@
 package com.sidekey.chat;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.util.Log;
 
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import java.util.Set;
+
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -17,13 +25,19 @@ import com.sidekey.chat.crypto.Encryptor;
 import com.sidekey.chat.crypto.KeyManager;
 import com.sidekey.chat.crypto.SecureStorage;
 import com.sidekey.chat.model.UserKey;
+import com.sidekey.chat.bluetooth.BluetoothService;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "SideKey";
 
+    private static final boolean TEST_SERVER = false;
+    private static final int BT_PERMISSION_CODE = 1001;
+
     private KeyManager    keyManager;
     private SecureStorage secureStorage;
+
+    private BluetoothService bluetoothService;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,11 +55,15 @@ public class MainActivity extends AppCompatActivity {
         secureStorage = new SecureStorage(this);
         keyManager.init();
 
+        bluetoothService = new BluetoothService(this);
+
         // Phase 4 — encryption test
         testEncryptor();
 
         // Phase 5 — partner key test
         testPartnerKey();
+
+        checkPermissions();
     }
 
     // -------------------------------------------------------------------------
@@ -129,5 +147,92 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             Log.e(TAG, "❌ Partner key test exception: " + e.getMessage(), e);
         }
+    }
+
+
+    private void testBluetooth() {
+        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+
+        if (adapter == null) {
+            Log.e(TAG, "Bluetooth not supported");
+            return;
+        }
+
+        if (!adapter.isEnabled()) {
+            Log.e(TAG, "Bluetooth is OFF");
+            return;
+        }
+
+        if (TEST_SERVER) {
+            Log.d(TAG, "TEST MODE: SERVER");
+            bluetoothService.startServer();
+            Log.d(TAG, "Server started");
+        } else {
+            Log.d(TAG, "TEST MODE: CLIENT");
+
+            Set<BluetoothDevice> devices = adapter.getBondedDevices();
+            if (devices == null || devices.isEmpty()) {
+                Log.e(TAG, "No bonded devices found");
+                return;
+            }
+
+            BluetoothDevice device = devices.iterator().next();
+            Log.d(TAG, "Connecting to: " + device.getName());
+            bluetoothService.connectToDevice(device);
+
+            // small delay so connection can establish
+            new Thread(() -> {
+                try {
+                    Thread.sleep(3000);
+                    bluetoothService.send("hello".getBytes());
+                    Log.d(TAG, "Sent hello");
+                } catch (Exception e) {
+                    Log.e(TAG, "Send error", e);
+                }
+            }).start();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode,
+            String[] permissions,
+            int[] grantResults
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == 1001) {
+
+            if (grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+
+                Log.d(TAG, "Location permission granted");
+
+                testBluetooth();
+
+            } else {
+
+                Log.e(TAG, "Location permission denied");
+            }
+        }
+    }
+
+    private void checkPermissions() {
+
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+        ) != PackageManager.PERMISSION_GRANTED) {
+
+            ActivityCompat.requestPermissions(
+                    this,
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    1001
+            );
+
+            return;
+        }
+
+        testBluetooth();
     }
 }
