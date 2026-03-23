@@ -12,37 +12,34 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 /**
- * BluetoothService — transport layer only.
+ * BluetoothService — raw transport layer only.
+ * No crypto. No pairing logic. Just moves bytes.
  *
- * Responsibilities:
- *   - Open server socket and wait for incoming connections (AcceptThread)
- *   - Connect to a remote device as client (ConnectThread)
- *   - Send and receive raw byte[] over an open socket (ConnectedThread)
+ * Thread model:
+ *   AcceptThread  — blocks on serverSocket.accept()
+ *   ConnectThread — blocks on socket.connect()
+ *   ConnectedThread — reads forever from a live socket
  *
- * No crypto here. No pairing logic here.
- * This layer only moves bytes.
+ * Handoff rule:
+ *   When a socket is live, the worker thread (Accept or Connect) calls
+ *   startConnectedThread() directly. It does NOT go through a shared
+ *   onSocketReady() that might cancel things in the wrong order.
  */
 public class BluetoothService {
 
     private static final String TAG = "SideKey-BT";
 
-    private final Context          context;
     private final BluetoothAdapter adapter;
-
     private BluetoothListener listener;
 
+    // Guarded by `this`
     private AcceptThread    acceptThread;
     private ConnectThread   connectThread;
     private ConnectedThread connectedThread;
 
     public BluetoothService(Context context) {
-        this.context = context;
         this.adapter = BluetoothAdapter.getDefaultAdapter();
     }
-
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
 
     public void setListener(BluetoothListener listener) {
         this.listener = listener;
@@ -52,71 +49,95 @@ public class BluetoothService {
         return adapter != null && adapter.isEnabled();
     }
 
-    /**
-     * Start server mode — wait for a remote device to connect.
-     * Call this on the device that will act as "host" during pairing.
-     */
-    public void startServer() {
-        stopAllThreads();
+    // -------------------------------------------------------------------------
+    // Public API
+    // -------------------------------------------------------------------------
+
+    public synchronized void startServer() {
+        cancelAcceptThread();
+        cancelConnectThread();
+        // Leave connectedThread alone — don't kill an existing session
+
         acceptThread = new AcceptThread();
         acceptThread.start();
         Log.d(TAG, "Server started — waiting for connection");
     }
 
-    /**
-     * Connect to a specific remote device as client.
-     * Call this on the device that will "join" during pairing.
-     */
-    public void connectToDevice(BluetoothDevice device) {
-        stopAllThreads();
+    public synchronized void connectToDevice(BluetoothDevice device) {
+        cancelAcceptThread();
+        cancelConnectThread();
+
         connectThread = new ConnectThread(device);
         connectThread.start();
         Log.d(TAG, "Connecting to: " + device.getName() + " [" + device.getAddress() + "]");
     }
 
-    /**
-     * Send raw bytes to the connected device.
-     * Must call only after onConnected() fires.
-     */
     public void send(byte[] data) {
-        if (connectedThread == null) {
-            Log.e(TAG, "send() called but no active connection");
+        ConnectedThread thread;
+        synchronized (this) {
+            thread = connectedThread;
+        }
+        if (thread == null) {
+            Log.e(TAG, "send() called but not connected");
             if (listener != null) listener.onError("Not connected");
             return;
         }
-        connectedThread.write(data);
+        thread.write(data);
     }
 
-    /** Close all threads and sockets cleanly. */
-    public void stop() {
-        stopAllThreads();
+    public synchronized void stop() {
+        cancelAcceptThread();
+        cancelConnectThread();
+        cancelConnectedThread();
         Log.d(TAG, "BluetoothService stopped");
     }
 
     // -------------------------------------------------------------------------
-    // Internal — called when a socket is ready (from either thread)
+    // Called from worker threads to hand off a live socket.
+    // IMPORTANT: the socket must NOT be touched by the caller after this point.
     // -------------------------------------------------------------------------
 
-    private synchronized void onSocketConnected(BluetoothSocket socket) {
-        // Stop whichever thread opened the socket — ConnectedThread takes over
-        if (acceptThread  != null) { acceptThread.cancel();  acceptThread  = null; }
-        if (connectThread != null) { connectThread.cancel(); connectThread = null; }
+    private synchronized void startConnectedThread(BluetoothSocket socket) {
+        // Kill any old connected session first
+        cancelConnectedThread();
 
+        // Start the new one — this is the only place ConnectedThread is created
         connectedThread = new ConnectedThread(socket);
         connectedThread.start();
 
-        if (listener != null) listener.onConnected(socket.getRemoteDevice());
-        Log.d(TAG, "Connected to: " + socket.getRemoteDevice().getName());
-    }
-
-    private synchronized void stopAllThreads() {
-        if (acceptThread    != null) { acceptThread.cancel();    acceptThread    = null; }
-        if (connectThread   != null) { connectThread.cancel();   connectThread   = null; }
-        if (connectedThread != null) { connectedThread.cancel(); connectedThread = null; }
+        // Notify listener on the caller's thread — UI will runOnUiThread itself
+        BluetoothDevice remote = socket.getRemoteDevice();
+        Log.d(TAG, "ConnectedThread started for: " + remote.getName());
+        if (listener != null) listener.onConnected(remote);
     }
 
     // -------------------------------------------------------------------------
-    // AcceptThread — server side
+    // Cancel helpers
+    // -------------------------------------------------------------------------
+
+    private void cancelAcceptThread() {
+        if (acceptThread != null) {
+            acceptThread.cancel();
+            acceptThread = null;
+        }
+    }
+
+    private void cancelConnectThread() {
+        if (connectThread != null) {
+            connectThread.cancel();
+            connectThread = null;
+        }
+    }
+
+    private void cancelConnectedThread() {
+        if (connectedThread != null) {
+            connectedThread.cancel();
+            connectedThread = null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // AcceptThread
     // -------------------------------------------------------------------------
 
     private class AcceptThread extends Thread {
@@ -131,7 +152,7 @@ public class BluetoothService {
                         BluetoothConstants.APP_UUID
                 );
             } catch (IOException e) {
-                Log.e(TAG, "AcceptThread: failed to open server socket", e);
+                Log.e(TAG, "AcceptThread: listenUsingRfcomm failed — " + e.getMessage());
                 if (listener != null) listener.onError("Server socket failed: " + e.getMessage());
             }
             serverSocket = tmp;
@@ -141,37 +162,52 @@ public class BluetoothService {
         public void run() {
             if (serverSocket == null) return;
 
-            BluetoothSocket socket = null;
+            Log.d(TAG, "AcceptThread: blocking on accept()...");
+
+            BluetoothSocket socket;
             try {
-                // Blocking — waits until client connects
                 socket = serverSocket.accept();
             } catch (IOException e) {
-                Log.e(TAG, "AcceptThread: accept() failed", e);
-                if (listener != null) listener.onError("Accept failed: " + e.getMessage());
-                return;
+                Log.d(TAG, "AcceptThread: accept() ended — " + e.getMessage());
+                return; // Normal when cancel() is called
             }
 
-            // Connection accepted — hand off to ConnectedThread
-            if (socket != null) {
-                onSocketConnected(socket);
-                try { serverSocket.close(); } catch (IOException ignored) {}
+            Log.d(TAG, "AcceptThread: accept() returned socket");
+
+            // 1. Start ConnectedThread FIRST — socket is alive here
+            startConnectedThread(socket);
+
+            // 2. Close serverSocket AFTER handoff
+            //    The client socket (socket) is a completely separate object.
+            try {
+                serverSocket.close();
+            } catch (IOException e) {
+                Log.w(TAG, "AcceptThread: serverSocket.close() — " + e.getMessage());
+            }
+
+            // 3. Clear our own reference in the service
+            synchronized (BluetoothService.this) {
+                if (acceptThread == this) acceptThread = null;
             }
         }
 
         void cancel() {
-            try { if (serverSocket != null) serverSocket.close(); }
-            catch (IOException e) { Log.e(TAG, "AcceptThread cancel failed", e); }
+            try {
+                if (serverSocket != null) serverSocket.close();
+            } catch (IOException e) {
+                Log.w(TAG, "AcceptThread cancel: " + e.getMessage());
+            }
         }
     }
 
     // -------------------------------------------------------------------------
-    // ConnectThread — client side
+    // ConnectThread
     // -------------------------------------------------------------------------
 
     private class ConnectThread extends Thread {
 
-        private final BluetoothSocket  socket;
-        private final BluetoothDevice  device;
+        private final BluetoothSocket socket;
+        private final BluetoothDevice device;
 
         ConnectThread(BluetoothDevice device) {
             this.device = device;
@@ -179,7 +215,7 @@ public class BluetoothService {
             try {
                 tmp = device.createRfcommSocketToServiceRecord(BluetoothConstants.APP_UUID);
             } catch (IOException e) {
-                Log.e(TAG, "ConnectThread: failed to create socket", e);
+                Log.e(TAG, "ConnectThread: createRfcomm failed — " + e.getMessage());
                 if (listener != null) listener.onError("Socket creation failed: " + e.getMessage());
             }
             socket = tmp;
@@ -189,29 +225,40 @@ public class BluetoothService {
         public void run() {
             if (socket == null) return;
 
-            // Stop discovery before connecting — saves battery and improves reliability
             adapter.cancelDiscovery();
 
+            Log.d(TAG, "ConnectThread: calling connect()...");
             try {
                 socket.connect();
             } catch (IOException e) {
-                Log.e(TAG, "ConnectThread: connect() failed", e);
+                Log.e(TAG, "ConnectThread: connect() failed — " + e.getMessage());
                 if (listener != null) listener.onError("Connection failed: " + e.getMessage());
                 try { socket.close(); } catch (IOException ignored) {}
                 return;
             }
 
-            onSocketConnected(socket);
+            Log.d(TAG, "ConnectThread: connect() succeeded");
+
+            // 1. Start ConnectedThread — socket is alive here
+            startConnectedThread(socket);
+
+            // 2. Clear our own reference
+            synchronized (BluetoothService.this) {
+                if (connectThread == this) connectThread = null;
+            }
         }
 
         void cancel() {
-            try { if (socket != null) socket.close(); }
-            catch (IOException e) { Log.e(TAG, "ConnectThread cancel failed", e); }
+            try {
+                if (socket != null) socket.close();
+            } catch (IOException e) {
+                Log.w(TAG, "ConnectThread cancel: " + e.getMessage());
+            }
         }
     }
 
     // -------------------------------------------------------------------------
-    // ConnectedThread — handles an open socket (both sides end up here)
+    // ConnectedThread
     // -------------------------------------------------------------------------
 
     private class ConnectedThread extends Thread {
@@ -222,30 +269,27 @@ public class BluetoothService {
 
         ConnectedThread(BluetoothSocket socket) {
             this.socket = socket;
-
             InputStream  tmpIn  = null;
             OutputStream tmpOut = null;
             try {
                 tmpIn  = socket.getInputStream();
                 tmpOut = socket.getOutputStream();
             } catch (IOException e) {
-                Log.e(TAG, "ConnectedThread: stream setup failed", e);
+                Log.e(TAG, "ConnectedThread: stream setup failed — " + e.getMessage());
                 if (listener != null) listener.onError("Stream setup failed: " + e.getMessage());
             }
-
             inputStream  = tmpIn;
             outputStream = tmpOut;
         }
 
         @Override
         public void run() {
-            // Read loop — stays alive as long as connection is open
+            Log.d(TAG, "ConnectedThread: read loop started");
             byte[] buffer = new byte[4096];
-            int    bytes;
 
-            while (true) {
+            while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    bytes = inputStream.read(buffer);
+                    int bytes = inputStream.read(buffer);
                     if (bytes > 0) {
                         byte[] received = new byte[bytes];
                         System.arraycopy(buffer, 0, received, 0, bytes);
@@ -253,11 +297,15 @@ public class BluetoothService {
                         if (listener != null) listener.onDataReceived(received);
                     }
                 } catch (IOException e) {
-                    Log.e(TAG, "ConnectedThread: read failed — connection lost", e);
-                    if (listener != null) listener.onDisconnected();
+                    if (!Thread.currentThread().isInterrupted()) {
+                        Log.e(TAG, "ConnectedThread: read error — " + e.getMessage());
+                        if (listener != null) listener.onDisconnected();
+                    }
                     break;
                 }
             }
+
+            Log.d(TAG, "ConnectedThread: read loop ended");
         }
 
         void write(byte[] data) {
@@ -266,14 +314,18 @@ public class BluetoothService {
                 outputStream.flush();
                 Log.d(TAG, "Sent " + data.length + " bytes");
             } catch (IOException e) {
-                Log.e(TAG, "ConnectedThread: write failed", e);
+                Log.e(TAG, "ConnectedThread: write failed — " + e.getMessage());
                 if (listener != null) listener.onError("Send failed: " + e.getMessage());
             }
         }
 
         void cancel() {
-            try { if (socket != null) socket.close(); }
-            catch (IOException e) { Log.e(TAG, "ConnectedThread cancel failed", e); }
+            interrupt();
+            try {
+                if (socket != null) socket.close();
+            } catch (IOException e) {
+                Log.w(TAG, "ConnectedThread cancel: " + e.getMessage());
+            }
         }
     }
 }
