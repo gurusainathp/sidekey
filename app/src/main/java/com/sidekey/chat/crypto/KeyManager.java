@@ -15,6 +15,7 @@ public class KeyManager {
     private final LazySodiumAndroid sodium;
 
     private byte[] publicKey;
+    private byte[] privateKey;
 
     public KeyManager(Context context) {
         this.storage = new SecureStorage(context);
@@ -22,12 +23,22 @@ public class KeyManager {
     }
 
     public void init() {
-        if (storage.hasPublicKey()) {
-            publicKey = storage.getPublicKey();
-            Log.d(TAG, "✅ Public key loaded from storage");
-            Log.d(TAG, "Public key (hex): " + bytesToHex(publicKey));
+        if (storage.hasPublicKey() && storage.hasPrivateKey()) {
+            loadExistingKeys();
         } else {
             generateAndSaveKeys();
+        }
+    }
+
+    private void loadExistingKeys() {
+        try {
+            publicKey = storage.getPublicKey();
+            privateKey = storage.getPrivateKey();
+            Log.d(TAG, "✅ Public key loaded from storage");
+            Log.d(TAG, "✅ Private key loaded from Keystore");
+            Log.d(TAG, "Public key (hex): " + bytesToHex(publicKey));
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Failed to load keys: " + e.getMessage(), e);
         }
     }
 
@@ -36,15 +47,14 @@ public class KeyManager {
             KeyPair keypair = sodium.cryptoBoxKeypair();
 
             publicKey = keypair.getPublicKey().getAsBytes();
-            byte[] privateKey = keypair.getSecretKey().getAsBytes();
+            privateKey = keypair.getSecretKey().getAsBytes();
 
             storage.savePublicKey(publicKey);
+            storage.savePrivateKey(privateKey);
 
-            // Private key Keystore persistence comes next phase
-            // Do NOT store raw private key in SharedPreferences
             Log.d(TAG, "✅ New keypair generated");
+            Log.d(TAG, "✅ Private key encrypted and stored in Keystore");
             Log.d(TAG, "Public key (hex): " + bytesToHex(publicKey));
-            Log.w(TAG, "⚠️ Private key not yet persisted — Keystore coming next phase");
 
         } catch (Exception e) {
             Log.e(TAG, "❌ Key generation failed: " + e.getMessage(), e);
@@ -53,6 +63,10 @@ public class KeyManager {
 
     public byte[] getPublicKey() {
         return publicKey;
+    }
+
+    public byte[] getPrivateKey() {
+        return privateKey;
     }
 
     private String bytesToHex(byte[] bytes) {
