@@ -54,20 +54,38 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="🔗  Find &amp; Connect"
+            android:text="🔗  Find and Connect"
             android:backgroundTint="#43A047" />
 
     </LinearLayout>
 
-    <!-- Send test message (only active after connection) -->
-    <Button
-        android:id="@+id/btnSend"
+    <!-- Fingerprint confirm/cancel — hidden until fingerprint arrives -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Send Test Message"
-        android:enabled="false"
-        android:backgroundTint="#6D4C41"
-        android:layout_marginBottom="24dp" />
+        android:orientation="horizontal"
+        android:layout_marginBottom="16dp">
+
+        <Button
+            android:id="@+id/btnConfirm"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="✅  Confirm Pair"
+            android:layout_marginEnd="8dp"
+            android:backgroundTint="#2E7D32"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnCancel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="❌  Cancel"
+            android:backgroundTint="#B71C1C"
+            android:visibility="gone" />
+
+    </LinearLayout>
 
     <!-- Live log area -->
     <TextView

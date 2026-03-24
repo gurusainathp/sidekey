@@ -6,15 +6,22 @@ import android.util.Log;
 import com.sidekey.chat.crypto.KeyManager;
 import com.sidekey.chat.crypto.SecureStorage;
 import com.sidekey.chat.model.PairingMessage;
+import com.sidekey.chat.model.PairingState;
 import com.sidekey.chat.model.UserKey;
 import com.sidekey.chat.utils.JsonUtil;
 
 /**
  * PairingManager — brain of the pairing flow.
  *
- * Sits above BluetoothService. Never touches Bluetooth directly.
- * BluetoothCallback.onMessage() feeds bytes in here.
- * Results go up via PairingCallback.
+ * Secure flow:
+ *   1. Receive partner key → store in memory as PairingState (NOT saved yet)
+ *   2. Show fingerprint to user for visual verification
+ *   3. User confirms → save partner key to SecureStorage
+ *   4. User cancels → discard PairingState, nothing persisted
+ *
+ * Does NOT touch Bluetooth.
+ * Does NOT touch UI.
+ * Communicates results via PairingCallback.
  */
 public class PairingManager {
 
@@ -24,6 +31,7 @@ public class PairingManager {
     private final SecureStorage storage;
 
     private PairingCallback callback;
+    private PairingState    pendingState;   // held in memory until confirmed or cancelled
 
     public PairingManager(Context context) {
         this.keyManager = new KeyManager(context);
@@ -36,8 +44,8 @@ public class PairingManager {
     }
 
     // -------------------------------------------------------------------------
-    // Build our own PAIR message — call createOwnMessage() then send the bytes
-    // via BluetoothService.send(). PairingManager never calls send() directly.
+    // Build our own PAIR message — call this, then pass bytes to BluetoothService
+    // PairingManager never calls BluetoothService directly
     // -------------------------------------------------------------------------
 
     public byte[] createOwnMessage() {
@@ -59,12 +67,12 @@ public class PairingManager {
             return null;
         }
 
-        Log.d(TAG, "Own PAIR message ready: " + message);
+        Log.d(TAG, "Own PAIR message ready");
         return json.getBytes();
     }
 
     // -------------------------------------------------------------------------
-    // Handle raw bytes arriving from BluetoothCallback.onMessage()
+    // Handle raw bytes from BluetoothCallback.onMessage()
     // -------------------------------------------------------------------------
 
     public void handleIncoming(byte[] data) {
@@ -73,7 +81,7 @@ public class PairingManager {
 
         PairingMessage message = JsonUtil.fromJson(json);
         if (message == null) {
-            Log.e(TAG, "handleIncoming: JSON parse failed");
+            Log.e(TAG, "handleIncoming: JSON parse failed — not a pairing message?");
             if (callback != null) callback.onPairingError("Could not parse incoming message");
             return;
         }
@@ -91,7 +99,40 @@ public class PairingManager {
     }
 
     // -------------------------------------------------------------------------
-    // Build ACK to send after user confirms fingerprint
+    // Confirmation — called by UI after user verifies fingerprint
+    // Only now do we persist the partner key
+    // -------------------------------------------------------------------------
+
+    public void confirmPairing() {
+        if (pendingState == null) {
+            Log.e(TAG, "confirmPairing: no pending state — nothing to confirm");
+            return;
+        }
+
+        pendingState.confirm();
+        storage.savePartnerPublicKey(pendingState.getPartnerKey());
+
+        Log.d(TAG, "✅ Pairing confirmed — partner key saved");
+        Log.d(TAG, "Fingerprint locked in: " + pendingState.getFingerprint());
+
+        pendingState = null;
+
+        if (callback != null) callback.onPairingComplete();
+    }
+
+    // -------------------------------------------------------------------------
+    // Cancellation — discard pending state, nothing is saved
+    // -------------------------------------------------------------------------
+
+    public void cancelPairing() {
+        if (pendingState == null) return;
+
+        Log.d(TAG, "Pairing cancelled — pending state discarded, nothing saved");
+        pendingState = null;
+    }
+
+    // -------------------------------------------------------------------------
+    // Build ACK to send back after confirming
     // -------------------------------------------------------------------------
 
     public byte[] createAckMessage() {
@@ -116,16 +157,25 @@ public class PairingManager {
         return storage.isPaired();
     }
 
+    public boolean isPending() {
+        return pendingState != null;
+    }
+
     public String getOwnFingerprint() {
         byte[] key = keyManager.getPublicKey();
         if (key == null) return "unknown";
-        return new UserKey(key).getFingerprint();  // uses convenience constructor
+        return new UserKey(key).getFingerprint();
     }
 
     public String getPartnerFingerprint() {
         byte[] key = storage.getPartnerPublicKey();
         if (key == null) return null;
         return new UserKey(key).getFingerprint();
+    }
+
+    public String getPendingFingerprint() {
+        if (pendingState == null) return null;
+        return pendingState.getFingerprint();
     }
 
     // -------------------------------------------------------------------------
@@ -136,25 +186,27 @@ public class PairingManager {
         byte[] partnerKey = message.getPublicKey();
 
         if (partnerKey == null || partnerKey.length != 32) {
-            Log.e(TAG, "handlePairMessage: invalid key — length=" +
-                    (partnerKey != null ? partnerKey.length : "null"));
+            Log.e(TAG, "handlePairMessage: invalid key length — "
+                    + (partnerKey != null ? partnerKey.length : "null"));
             if (callback != null) callback.onPairingError("Partner sent invalid key");
             return;
         }
 
-        storage.savePartnerPublicKey(partnerKey);
-
+        // Build fingerprint from received key
         UserKey partnerUserKey = new UserKey(partnerKey, message.getTimestamp());
         String fingerprint = partnerUserKey.getFingerprint();
 
-        Log.d(TAG, "✅ Partner key saved");
-        Log.d(TAG, "Fingerprint: " + fingerprint);
+        // Store in memory ONLY — do not save to storage yet
+        pendingState = new PairingState(partnerKey, message.getTimestamp(), fingerprint);
+
+        Log.d(TAG, "Pending pairing fingerprint: " + fingerprint);
+        Log.d(TAG, "→ Waiting for user confirmation before saving");
 
         if (callback != null) callback.onPartnerKeyReceived(fingerprint);
     }
 
     private void handleAckMessage() {
-        Log.d(TAG, "✅ ACK received — pairing complete both sides");
+        Log.d(TAG, "✅ ACK received — partner confirmed pairing on their side");
         if (callback != null) callback.onPairingComplete();
     }
 }

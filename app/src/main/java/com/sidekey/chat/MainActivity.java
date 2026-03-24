@@ -4,15 +4,19 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -25,6 +29,7 @@ import com.sidekey.chat.bluetooth.BluetoothListener;
 import com.sidekey.chat.bluetooth.BluetoothService;
 import com.sidekey.chat.pairing.PairingCallback;
 import com.sidekey.chat.pairing.PairingManager;
+import com.sidekey.chat.ui.PairingController;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,12 +46,29 @@ public class MainActivity extends AppCompatActivity {
     private ScrollView scrollLog;
     private Button     btnServer;
     private Button     btnClient;
-    private Button     btnSend;
+    private Button     btnConfirm;
+    private Button     btnCancel;
 
     // Core
-    private BluetoothService bluetoothService;
-    private PairingManager   pairingManager;
-    private BluetoothAdapter bluetoothAdapter;
+    private BluetoothService   bluetoothService;
+    private PairingManager     pairingManager;
+    private PairingController  pairingController;
+    private BluetoothAdapter   bluetoothAdapter;
+
+    // Launcher for the system "enable Bluetooth" dialog
+    private final ActivityResultLauncher<Intent> enableBtLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.StartActivityForResult(),
+                    result -> {
+                        if (bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
+                            tvStatus.setText("Bluetooth ready");
+                            log("✅ Bluetooth enabled");
+                        } else {
+                            tvStatus.setText("Bluetooth is OFF — cannot pair");
+                            log("⚠️ Bluetooth was not enabled — pairing unavailable");
+                        }
+                    }
+            );
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -75,8 +97,10 @@ public class MainActivity extends AppCompatActivity {
         bluetoothService.setListener(btListener);
         bluetoothService.setCallback(btCallback);
 
+        pairingController = new PairingController(pairingManager, bluetoothService);
+
         setupButtonListeners();
-        checkBluetoothState();
+        checkAndPromptBluetooth();
         requestRequiredPermissions();
     }
 
@@ -91,12 +115,13 @@ public class MainActivity extends AppCompatActivity {
     // -------------------------------------------------------------------------
 
     private void bindViews() {
-        tvStatus  = findViewById(R.id.tvStatus);
-        tvLog     = findViewById(R.id.tvLog);
-        scrollLog = findViewById(R.id.scrollLog);
-        btnServer = findViewById(R.id.btnServer);
-        btnClient = findViewById(R.id.btnClient);
-        btnSend   = findViewById(R.id.btnSend);
+        tvStatus   = findViewById(R.id.tvStatus);
+        tvLog      = findViewById(R.id.tvLog);
+        scrollLog  = findViewById(R.id.scrollLog);
+        btnServer  = findViewById(R.id.btnServer);
+        btnClient  = findViewById(R.id.btnClient);
+        btnConfirm = findViewById(R.id.btnConfirm);
+        btnCancel  = findViewById(R.id.btnCancel);
     }
 
     // -------------------------------------------------------------------------
@@ -106,10 +131,7 @@ public class MainActivity extends AppCompatActivity {
     private void setupButtonListeners() {
 
         btnServer.setOnClickListener(v -> {
-            if (!hasBluetoothPermissions()) {
-                log("⚠️ Bluetooth permissions not granted yet");
-                return;
-            }
+            if (!isBluetoothReady()) return;
             log("Role: SERVER — waiting for connection...");
             btnServer.setEnabled(false);
             btnClient.setEnabled(false);
@@ -118,32 +140,42 @@ public class MainActivity extends AppCompatActivity {
         });
 
         btnClient.setOnClickListener(v -> {
-            if (!hasBluetoothPermissions()) {
-                log("⚠️ Bluetooth permissions not granted yet");
-                return;
-            }
+            if (!isBluetoothReady()) return;
             showDevicePicker();
         });
 
-        btnSend.setOnClickListener(v -> {
-            String msg = "Hello from SideKey!";
-            bluetoothService.send(msg.getBytes());
-            log("→ Sent test message");
+        btnConfirm.setOnClickListener(v -> {
+            log("→ Confirming pairing...");
+            pairingController.onPairConfirmed();
+            setPairingConfirmVisible(false);
+        });
+
+        btnCancel.setOnClickListener(v -> {
+            log("→ Pairing cancelled by user");
+            pairingController.onPairCancelled();
+            setPairingConfirmVisible(false);
+            tvStatus.setText("Pairing cancelled");
         });
     }
 
     // -------------------------------------------------------------------------
-    // BluetoothCallback — routes events into PairingManager (background thread)
+    // BluetoothCallback — background thread, no UI calls here
     // -------------------------------------------------------------------------
 
     private final BluetoothCallback btCallback = new BluetoothCallback() {
 
         @Override
         public void onConnected() {
+            // Mark pairing in progress on the service (for logging)
+            bluetoothService.setPairingInProgress(true);
+
+            // Send our own public key immediately after connection
             byte[] ownMessage = pairingManager.createOwnMessage();
             if (ownMessage != null) {
                 bluetoothService.send(ownMessage);
-                Log.d(TAG, "Sent own pairing message after connect");
+                Log.d(TAG, "Sent own pairing message");
+            } else {
+                Log.e(TAG, "Failed to build own pairing message");
             }
         }
 
@@ -153,38 +185,28 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @Override
-        public void onDisconnected() {}
+        public void onDisconnected() {
+            bluetoothService.setPairingInProgress(false);
+        }
 
         @Override
-        public void onError(String message) {}
+        public void onError(String message) {
+            bluetoothService.setPairingInProgress(false);
+        }
     };
 
     // -------------------------------------------------------------------------
-    // BluetoothListener — UI updates only (background thread → runOnUiThread)
+    // BluetoothListener — UI updates, must use runOnUiThread
     // -------------------------------------------------------------------------
 
     private final BluetoothListener btListener = new BluetoothListener() {
 
         @Override
         public void onConnected(BluetoothDevice device) {
-            // Guard: getRemoteDevice name needs BLUETOOTH_CONNECT on API 31+
-            String deviceName;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (ContextCompat.checkSelfPermission(MainActivity.this,
-                        Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                    deviceName = device.getName();
-                } else {
-                    deviceName = device.getAddress();
-                }
-            } else {
-                deviceName = device.getName();
-            }
-
-            final String name = deviceName;
+            String deviceName = getDeviceName(device);
             runOnUiThread(() -> {
-                log("✅ Connected to: " + name);
-                tvStatus.setText("Connected: " + name);
-                btnSend.setEnabled(true);
+                log("✅ Connected to: " + deviceName);
+                tvStatus.setText("Connected: " + deviceName);
             });
         }
 
@@ -198,9 +220,9 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 log("⚠️ Disconnected");
                 tvStatus.setText("Disconnected");
-                btnSend.setEnabled(false);
                 btnServer.setEnabled(true);
                 btnClient.setEnabled(true);
+                setPairingConfirmVisible(false);
             });
         }
 
@@ -208,6 +230,7 @@ public class MainActivity extends AppCompatActivity {
         public void onError(String message) {
             runOnUiThread(() -> {
                 log("❌ Error: " + message);
+                tvStatus.setText("Error — see log");
                 btnServer.setEnabled(true);
                 btnClient.setEnabled(true);
             });
@@ -215,26 +238,32 @@ public class MainActivity extends AppCompatActivity {
     };
 
     // -------------------------------------------------------------------------
-    // PairingCallback — PairingManager results (may be background thread)
+    // PairingCallback — may fire on background thread
     // -------------------------------------------------------------------------
 
     private final PairingCallback pairingCallback = new PairingCallback() {
 
         @Override
         public void onPartnerKeyReceived(String fingerprint) {
+            // Key is NOT saved yet — waiting for user confirmation
+            pairingController.onFingerprintReady(fingerprint);
+
             runOnUiThread(() -> {
-                log("🔑 Partner key received!");
+                log("🔑 Partner key received (NOT saved yet)");
                 log("Fingerprint: " + fingerprint);
-                log("→ Show this to your partner and confirm they see the same");
-                tvStatus.setText("Paired — verify fingerprint");
+                log("→ Confirm only if your partner shows the same fingerprint");
+                tvStatus.setText("Verify fingerprint: " + fingerprint);
+                setPairingConfirmVisible(true);
+                bluetoothService.setPairingInProgress(false);
             });
         }
 
         @Override
         public void onPairingComplete() {
             runOnUiThread(() -> {
-                log("✅ Pairing complete — both sides confirmed");
+                log("✅ Pairing complete — partner key saved");
                 tvStatus.setText("Paired ✅");
+                setPairingConfirmVisible(false);
             });
         }
 
@@ -243,21 +272,33 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 log("❌ Pairing error: " + reason);
                 tvStatus.setText("Pairing failed");
+                setPairingConfirmVisible(false);
+                btnServer.setEnabled(true);
+                btnClient.setEnabled(true);
             });
         }
     };
 
     // -------------------------------------------------------------------------
-    // Device picker — lists bonded devices for user to choose
+    // Show / hide confirm + cancel buttons
+    // -------------------------------------------------------------------------
+
+    private void setPairingConfirmVisible(boolean visible) {
+        int visibility = visible ? View.VISIBLE : View.GONE;
+        btnConfirm.setVisibility(visibility);
+        btnCancel.setVisibility(visibility);
+    }
+
+    // -------------------------------------------------------------------------
+    // Device picker
     // -------------------------------------------------------------------------
 
     private void showDevicePicker() {
         if (bluetoothAdapter == null) {
-            log("Bluetooth not available on this device");
+            log("Bluetooth not available");
             return;
         }
 
-        // Guard: getBondedDevices requires BLUETOOTH_CONNECT on API 31+
         Set<BluetoothDevice> bonded;
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -282,32 +323,19 @@ public class MainActivity extends AppCompatActivity {
         final String[]              deviceNames = new String[deviceList.size()];
 
         for (int i = 0; i < deviceList.size(); i++) {
-            BluetoothDevice d = deviceList.get(i);
-            String name;
-            try {
-                name = d.getName();
-                if (name == null) name = d.getAddress();
-            } catch (SecurityException e) {
-                name = d.getAddress();
-            }
-            deviceNames[i] = name + "\n" + d.getAddress();
+            deviceNames[i] = getDeviceName(deviceList.get(i))
+                    + "\n" + deviceList.get(i).getAddress();
         }
 
         new AlertDialog.Builder(this)
                 .setTitle("Select device to connect")
                 .setItems(deviceNames, (dialog, which) -> {
                     BluetoothDevice chosen = deviceList.get(which);
-                    String chosenName;
-                    try {
-                        chosenName = chosen.getName();
-                        if (chosenName == null) chosenName = chosen.getAddress();
-                    } catch (SecurityException e) {
-                        chosenName = chosen.getAddress();
-                    }
-                    log("Role: CLIENT — connecting to: " + chosenName);
+                    String name = getDeviceName(chosen);
+                    log("Role: CLIENT — connecting to: " + name);
                     btnServer.setEnabled(false);
                     btnClient.setEnabled(false);
-                    tvStatus.setText("Connecting to " + chosenName + "...");
+                    tvStatus.setText("Connecting to " + name + "...");
                     bluetoothService.connectToDevice(chosen);
                 })
                 .setNegativeButton("Cancel", null)
@@ -315,13 +343,44 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // -------------------------------------------------------------------------
-    // Permission helpers
+    // Bluetooth state helpers
     // -------------------------------------------------------------------------
 
     /**
-     * Returns true if all runtime Bluetooth permissions are granted
-     * for the current API level.
+     * Returns true if Bluetooth is supported, enabled, and permissions are granted.
+     * Prompts appropriately if any condition is not met.
      */
+    private boolean isBluetoothReady() {
+        if (bluetoothAdapter == null) {
+            log("❌ Bluetooth not supported on this device");
+            return false;
+        }
+        if (!bluetoothAdapter.isEnabled()) {
+            log("⚠️ Bluetooth is OFF — requesting to enable...");
+            enableBtLauncher.launch(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
+            return false;
+        }
+        if (!hasBluetoothPermissions()) {
+            log("⚠️ Bluetooth permissions not granted — requesting...");
+            requestRequiredPermissions();
+            return false;
+        }
+        return true;
+    }
+
+    private void checkAndPromptBluetooth() {
+        if (bluetoothAdapter == null) {
+            tvStatus.setText("Bluetooth not supported on this device");
+            btnServer.setEnabled(false);
+            btnClient.setEnabled(false);
+        } else if (!bluetoothAdapter.isEnabled()) {
+            tvStatus.setText("Bluetooth is OFF");
+            log("Bluetooth is OFF — tap a button and you will be prompted to enable it");
+        } else {
+            tvStatus.setText("Bluetooth ready");
+        }
+    }
+
     private boolean hasBluetoothPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
@@ -336,12 +395,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void requestRequiredPermissions() {
         List<String> needed = new ArrayList<>();
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
                     != PackageManager.PERMISSION_GRANTED)
                 needed.add(Manifest.permission.BLUETOOTH_CONNECT);
-
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
                     != PackageManager.PERMISSION_GRANTED)
                 needed.add(Manifest.permission.BLUETOOTH_SCAN);
@@ -350,9 +407,9 @@ public class MainActivity extends AppCompatActivity {
                     != PackageManager.PERMISSION_GRANTED)
                 needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
         }
-
         if (!needed.isEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toArray(new String[0]), PERMISSION_REQUEST_CODE);
+            ActivityCompat.requestPermissions(this, needed.toArray(new String[0]),
+                    PERMISSION_REQUEST_CODE);
         } else {
             log("✅ All permissions granted");
         }
@@ -362,21 +419,12 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(
             int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-
         if (requestCode == PERMISSION_REQUEST_CODE) {
             boolean allGranted = true;
-            for (int r : grantResults) {
-                if (r != PackageManager.PERMISSION_GRANTED) {
-                    allGranted = false;
-                    break;
-                }
-            }
-            if (allGranted) {
-                log("✅ All permissions granted");
-            } else {
-                log("⚠️ Some permissions denied — Bluetooth may not work.\n"
-                        + "Go to Settings → Apps → SideKey → Permissions");
-            }
+            for (int r : grantResults)
+                if (r != PackageManager.PERMISSION_GRANTED) { allGranted = false; break; }
+            log(allGranted ? "✅ All permissions granted"
+                    : "⚠️ Some permissions denied — go to Settings → Apps → SideKey → Permissions");
         }
     }
 
@@ -384,15 +432,12 @@ public class MainActivity extends AppCompatActivity {
     // Helpers
     // -------------------------------------------------------------------------
 
-    private void checkBluetoothState() {
-        if (bluetoothAdapter == null) {
-            tvStatus.setText("Bluetooth not supported on this device");
-            btnServer.setEnabled(false);
-            btnClient.setEnabled(false);
-        } else if (!bluetoothAdapter.isEnabled()) {
-            tvStatus.setText("Bluetooth is OFF — please enable it");
-        } else {
-            tvStatus.setText("Bluetooth ready");
+    private String getDeviceName(BluetoothDevice device) {
+        try {
+            String name = device.getName();
+            return (name != null) ? name : device.getAddress();
+        } catch (SecurityException e) {
+            return device.getAddress();
         }
     }
 

@@ -21,12 +21,15 @@ public class BluetoothService {
 
     private final BluetoothAdapter adapter;
 
-    private BluetoothListener listener;  // UI callbacks (connected, disconnected, received)
-    private BluetoothCallback callback;  // Logic callbacks (PairingManager, ChatManager)
+    private BluetoothListener listener;
+    private BluetoothCallback callback;
 
     private AcceptThread    acceptThread;
     private ConnectThread   connectThread;
     private ConnectedThread connectedThread;
+
+    // Tracks whether a pairing exchange is in progress — used only for logging
+    private volatile boolean pairingInProgress = false;
 
     public BluetoothService(Context context) {
         this.adapter = BluetoothAdapter.getDefaultAdapter();
@@ -42,6 +45,11 @@ public class BluetoothService {
 
     public boolean isBluetoothEnabled() {
         return adapter != null && adapter.isEnabled();
+    }
+
+    public void setPairingInProgress(boolean inProgress) {
+        this.pairingInProgress = inProgress;
+        Log.d(TAG, "Pairing in progress: " + inProgress);
     }
 
     // -------------------------------------------------------------------------
@@ -75,6 +83,9 @@ public class BluetoothService {
             if (callback != null) callback.onError("Not connected");
             return;
         }
+        if (pairingInProgress) {
+            Log.d(TAG, "Sending pairing data (" + data.length + " bytes)");
+        }
         thread.write(data);
     }
 
@@ -86,7 +97,7 @@ public class BluetoothService {
     }
 
     // -------------------------------------------------------------------------
-    // Internal handoff — called when a live socket is ready
+    // Internal handoff
     // -------------------------------------------------------------------------
 
     private synchronized void startConnectedThread(BluetoothSocket socket) {
@@ -261,7 +272,8 @@ public class BluetoothService {
                     if (bytes > 0) {
                         byte[] received = new byte[bytes];
                         System.arraycopy(buffer, 0, received, 0, bytes);
-                        Log.d(TAG, "Received " + bytes + " bytes");
+                        Log.d(TAG, "Received " + bytes + " bytes"
+                                + (pairingInProgress ? " [pairing in progress]" : ""));
                         if (listener != null) listener.onDataReceived(received);
                         if (callback != null) callback.onMessage(received);
                     }
