@@ -1,0 +1,4 @@
+package com.sidekey.chat.crypto;
+
+public class SessionStore {
+}
