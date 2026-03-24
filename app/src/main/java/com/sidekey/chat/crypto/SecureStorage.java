@@ -28,7 +28,7 @@ public class SecureStorage {
     }
 
     // -------------------------------------------------------------------------
-    // AES key in Keystore (internal — never exposed outside this class)
+    // AES key in Keystore — internal only, used to encrypt the private key
     // -------------------------------------------------------------------------
 
     private SecretKey getOrCreateAesKey() throws Exception {
@@ -62,7 +62,7 @@ public class SecureStorage {
     }
 
     // -------------------------------------------------------------------------
-    // Own private key — encrypted via AES/Keystore
+    // Own private key — AES-GCM encrypted, stored in SharedPreferences
     // -------------------------------------------------------------------------
 
     public void savePrivateKey(byte[] privateKey) throws Exception {
@@ -73,11 +73,11 @@ public class SecureStorage {
         byte[] iv        = cipher.getIV();
         byte[] encrypted = cipher.doFinal(privateKey);
 
-        String ivEnc  = Base64.encodeToString(iv,        Base64.NO_WRAP);
-        String encEnc = Base64.encodeToString(encrypted, Base64.NO_WRAP);
+        String stored = Base64.encodeToString(iv, Base64.NO_WRAP)
+                + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP);
 
         prefs.edit()
-                .putString(CryptoConstants.KEY_PRIVATE_ENCRYPTED, ivEnc + ":" + encEnc)
+                .putString(CryptoConstants.KEY_PRIVATE_ENCRYPTED, stored)
                 .apply();
 
         Log.d(TAG, "Private key encrypted and saved");
@@ -97,8 +97,9 @@ public class SecureStorage {
         byte[] encrypted = Base64.decode(parts[1], Base64.NO_WRAP);
 
         SecretKey aesKey = getOrCreateAesKey();
-        Cipher cipher = Cipher.getInstance(CryptoConstants.AES_MODE);
-        cipher.init(Cipher.DECRYPT_MODE, aesKey, new GCMParameterSpec(CryptoConstants.GCM_TAG_SIZE, iv));
+        Cipher cipher    = Cipher.getInstance(CryptoConstants.AES_MODE);
+        cipher.init(Cipher.DECRYPT_MODE, aesKey,
+                new GCMParameterSpec(CryptoConstants.GCM_TAG_SIZE, iv));
 
         return cipher.doFinal(encrypted);
     }
@@ -129,27 +130,34 @@ public class SecureStorage {
     }
 
     // -------------------------------------------------------------------------
-    // Partner key + pair status
+    // Partner public key
+    // Called by: PairingManager.savePartnerPublicKey / getPartnerPublicKey
     // -------------------------------------------------------------------------
 
-    public void savePartnerKey(byte[] partnerKey) {
-        long timestamp = System.currentTimeMillis();
-
+    public void savePartnerPublicKey(byte[] partnerKey) {
         prefs.edit()
                 .putString(CryptoConstants.KEY_PARTNER,
                         Base64.encodeToString(partnerKey, Base64.NO_WRAP))
-                .putLong(CryptoConstants.KEY_PARTNER_TIMESTAMP, timestamp)
+                .putLong(CryptoConstants.KEY_PARTNER_TIMESTAMP, System.currentTimeMillis())
                 .putBoolean(CryptoConstants.KEY_IS_PAIRED, true)
                 .apply();
 
-        Log.d(TAG, "Partner key saved — pair status set to true");
+        Log.d(TAG, "Partner public key saved — isPaired = true");
     }
 
-    public byte[] getPartnerKey() {
+    public byte[] getPartnerPublicKey() {
         String encoded = prefs.getString(CryptoConstants.KEY_PARTNER, null);
         if (encoded == null) return null;
         return Base64.decode(encoded, Base64.NO_WRAP);
     }
+
+    public boolean hasPartnerPublicKey() {
+        return prefs.contains(CryptoConstants.KEY_PARTNER);
+    }
+
+    // -------------------------------------------------------------------------
+    // Pair status
+    // -------------------------------------------------------------------------
 
     public boolean isPaired() {
         return prefs.getBoolean(CryptoConstants.KEY_IS_PAIRED, false);
@@ -159,6 +167,10 @@ public class SecureStorage {
         return prefs.getLong(CryptoConstants.KEY_PARTNER_TIMESTAMP, 0L);
     }
 
+    /**
+     * Removes partner key and resets pair status.
+     * No UI trigger yet — called manually for testing or reset flow.
+     */
     public void clearPartner() {
         prefs.edit()
                 .remove(CryptoConstants.KEY_PARTNER)
@@ -166,6 +178,6 @@ public class SecureStorage {
                 .putBoolean(CryptoConstants.KEY_IS_PAIRED, false)
                 .apply();
 
-        Log.d(TAG, "Partner key cleared — unpaired");
+        Log.d(TAG, "Partner key cleared — isPaired = false");
     }
 }

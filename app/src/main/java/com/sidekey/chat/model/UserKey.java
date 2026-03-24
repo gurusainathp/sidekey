@@ -6,10 +6,18 @@ public class UserKey {
 
     private final byte[] publicKey;
     private final long   timestamp;
+    private final String fingerprint;
 
+    // Full constructor
     public UserKey(byte[] publicKey, long timestamp) {
-        this.publicKey = publicKey;
-        this.timestamp = timestamp;
+        this.publicKey   = publicKey;
+        this.timestamp   = timestamp;
+        this.fingerprint = generateFingerprint(publicKey);
+    }
+
+    // Convenience constructor — uses current time
+    public UserKey(byte[] publicKey) {
+        this(publicKey, System.currentTimeMillis());
     }
 
     public byte[] getPublicKey() {
@@ -21,10 +29,15 @@ public class UserKey {
     }
 
     /**
-     * Returns a human-readable fingerprint from the public key.
-     * Format: "A1F9-22C8-77D1" (first 12 hex chars of SHA-256, grouped in 4s)
+     * Returns a short human-readable fingerprint for pairing verification.
+     * Format: A1F9-22C8-77D1
      */
     public String getFingerprint() {
+        return fingerprint;
+    }
+
+    // SHA-256 of public key → hex → first 12 chars → formatted as XXXX-XXXX-XXXX
+    private static String generateFingerprint(byte[] publicKey) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(publicKey);
@@ -34,17 +47,16 @@ public class UserKey {
                 hex.append(String.format("%02X", b));
             }
 
-            // Take first 12 chars and group into 3 blocks of 4
             String raw = hex.substring(0, 12);
             return raw.substring(0, 4) + "-" + raw.substring(4, 8) + "-" + raw.substring(8, 12);
 
         } catch (Exception e) {
-            return "????-????-????";
+            return "0000-0000-0000";
         }
     }
 
     @Override
     public String toString() {
-        return "UserKey{fingerprint=" + getFingerprint() + ", timestamp=" + timestamp + "}";
+        return "UserKey{fingerprint=" + fingerprint + ", timestamp=" + timestamp + "}";
     }
 }
