@@ -23,29 +23,21 @@
         android:text="Bluetooth: checking..."
         android:textSize="14sp"
         android:textColor="#AAAAAA"
-        android:layout_marginBottom="24dp" />
+        android:layout_marginBottom="16dp" />
 
     <!-- Role selection -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Select role for this device:"
-        android:textSize="14sp"
-        android:textColor="#CCCCCC"
-        android:layout_marginBottom="12dp" />
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="16dp">
+        android:layout_marginBottom="8dp">
 
         <Button
             android:id="@+id/btnServer"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="📡  Start Server"
+            android:text="📡 Start Server"
             android:layout_marginEnd="8dp"
             android:backgroundTint="#1E88E5" />
 
@@ -54,7 +46,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="🔗  Find and Connect"
+            android:text="🔗 Find and Connect"
             android:backgroundTint="#43A047" />
 
     </LinearLayout>
@@ -64,14 +56,14 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="16dp">
+        android:layout_marginBottom="8dp">
 
         <Button
             android:id="@+id/btnConfirm"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="✅  Confirm Pair"
+            android:text="✅ Confirm Pair"
             android:layout_marginEnd="8dp"
             android:backgroundTint="#2E7D32"
             android:visibility="gone" />
@@ -81,13 +73,43 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="❌  Cancel"
+            android:text="❌ Cancel"
             android:backgroundTint="#B71C1C"
             android:visibility="gone" />
 
     </LinearLayout>
 
-    <!-- Live log area -->
+    <!-- Message input — hidden until chat is ready -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
+        <EditText
+            android:id="@+id/etMessage"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Type a message..."
+            android:textColor="#FFFFFF"
+            android:textColorHint="#888888"
+            android:backgroundTint="#333333"
+            android:layout_marginEnd="8dp"
+            android:visibility="gone"
+            android:inputType="text" />
+
+        <Button
+            android:id="@+id/btnSend"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Send"
+            android:backgroundTint="#6A1B9A"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+    <!-- Live log -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

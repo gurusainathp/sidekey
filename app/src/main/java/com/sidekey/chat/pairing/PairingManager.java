@@ -19,9 +19,7 @@ import com.sidekey.chat.utils.JsonUtil;
  *   3. User confirms → save partner key to SecureStorage
  *   4. User cancels → discard PairingState, nothing persisted
  *
- * Does NOT touch Bluetooth.
- * Does NOT touch UI.
- * Communicates results via PairingCallback.
+ * Also exposes key material getters for ChatManager.
  */
 public class PairingManager {
 
@@ -31,7 +29,7 @@ public class PairingManager {
     private final SecureStorage storage;
 
     private PairingCallback callback;
-    private PairingState    pendingState;   // held in memory until confirmed or cancelled
+    private PairingState    pendingState;
 
     public PairingManager(Context context) {
         this.keyManager = new KeyManager(context);
@@ -44,29 +42,22 @@ public class PairingManager {
     }
 
     // -------------------------------------------------------------------------
-    // Build our own PAIR message — call this, then pass bytes to BluetoothService
-    // PairingManager never calls BluetoothService directly
+    // Build PAIR message — caller sends bytes via BluetoothService
     // -------------------------------------------------------------------------
 
     public byte[] createOwnMessage() {
         byte[] publicKey = keyManager.getPublicKey();
         if (publicKey == null) {
-            Log.e(TAG, "createOwnMessage: public key null — KeyManager not ready");
+            Log.e(TAG, "createOwnMessage: public key null");
             return null;
         }
-
         PairingMessage message = new PairingMessage(
-                PairingMessage.TYPE_PAIR,
-                publicKey,
-                System.currentTimeMillis()
-        );
-
+                PairingMessage.TYPE_PAIR, publicKey, System.currentTimeMillis());
         String json = JsonUtil.toJson(message);
         if (json == null) {
-            Log.e(TAG, "createOwnMessage: JSON serialisation failed");
+            Log.e(TAG, "createOwnMessage: serialisation failed");
             return null;
         }
-
         Log.d(TAG, "Own PAIR message ready");
         return json.getBytes();
     }
@@ -77,74 +68,55 @@ public class PairingManager {
 
     public void handleIncoming(byte[] data) {
         String json = new String(data);
-        Log.d(TAG, "Incoming raw JSON: " + json);
+        Log.d(TAG, "Incoming: " + json);
 
         PairingMessage message = JsonUtil.fromJson(json);
         if (message == null) {
-            Log.e(TAG, "handleIncoming: JSON parse failed — not a pairing message?");
+            Log.e(TAG, "handleIncoming: parse failed");
             if (callback != null) callback.onPairingError("Could not parse incoming message");
             return;
         }
 
         switch (message.getType()) {
-            case PairingMessage.TYPE_PAIR:
-                handlePairMessage(message);
-                break;
-            case PairingMessage.TYPE_ACK:
-                handleAckMessage();
-                break;
+            case PairingMessage.TYPE_PAIR: handlePairMessage(message); break;
+            case PairingMessage.TYPE_ACK:  handleAckMessage();         break;
             default:
                 Log.w(TAG, "handleIncoming: unknown type — " + message.getType());
         }
     }
 
     // -------------------------------------------------------------------------
-    // Confirmation — called by UI after user verifies fingerprint
-    // Only now do we persist the partner key
+    // Confirm — only now do we persist
     // -------------------------------------------------------------------------
 
     public void confirmPairing() {
         if (pendingState == null) {
-            Log.e(TAG, "confirmPairing: no pending state — nothing to confirm");
+            Log.e(TAG, "confirmPairing: no pending state");
             return;
         }
-
         pendingState.confirm();
         storage.savePartnerPublicKey(pendingState.getPartnerKey());
-
         Log.d(TAG, "✅ Pairing confirmed — partner key saved");
         Log.d(TAG, "Fingerprint locked in: " + pendingState.getFingerprint());
-
         pendingState = null;
-
         if (callback != null) callback.onPairingComplete();
     }
 
-    // -------------------------------------------------------------------------
-    // Cancellation — discard pending state, nothing is saved
-    // -------------------------------------------------------------------------
-
     public void cancelPairing() {
         if (pendingState == null) return;
-
-        Log.d(TAG, "Pairing cancelled — pending state discarded, nothing saved");
+        Log.d(TAG, "Pairing cancelled — pending state discarded");
         pendingState = null;
     }
 
     // -------------------------------------------------------------------------
-    // Build ACK to send back after confirming
+    // Build ACK — send after confirming
     // -------------------------------------------------------------------------
 
     public byte[] createAckMessage() {
         byte[] publicKey = keyManager.getPublicKey();
         if (publicKey == null) return null;
-
         PairingMessage ack = new PairingMessage(
-                PairingMessage.TYPE_ACK,
-                publicKey,
-                System.currentTimeMillis()
-        );
-
+                PairingMessage.TYPE_ACK, publicKey, System.currentTimeMillis());
         String json = JsonUtil.toJson(ack);
         return json != null ? json.getBytes() : null;
     }
@@ -174,39 +146,53 @@ public class PairingManager {
     }
 
     public String getPendingFingerprint() {
-        if (pendingState == null) return null;
-        return pendingState.getFingerprint();
+        return pendingState != null ? pendingState.getFingerprint() : null;
     }
 
     // -------------------------------------------------------------------------
-    // Internal handlers
+    // Key material getters — used by ChatManager
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns own private key for use in MessageCipher.
+     * Never expose this outside the crypto layer.
+     */
+    public byte[] getOwnPrivateKey() {
+        try {
+            return keyManager.getPrivateKey();
+        } catch (Exception e) {
+            Log.e(TAG, "getOwnPrivateKey failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Returns the saved partner public key, or null if not paired.
+     */
+    public byte[] getPartnerPublicKey() {
+        return storage.getPartnerPublicKey();
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal
     // -------------------------------------------------------------------------
 
     private void handlePairMessage(PairingMessage message) {
         byte[] partnerKey = message.getPublicKey();
-
         if (partnerKey == null || partnerKey.length != 32) {
-            Log.e(TAG, "handlePairMessage: invalid key length — "
-                    + (partnerKey != null ? partnerKey.length : "null"));
+            Log.e(TAG, "handlePairMessage: invalid key");
             if (callback != null) callback.onPairingError("Partner sent invalid key");
             return;
         }
-
-        // Build fingerprint from received key
         UserKey partnerUserKey = new UserKey(partnerKey, message.getTimestamp());
         String fingerprint = partnerUserKey.getFingerprint();
-
-        // Store in memory ONLY — do not save to storage yet
         pendingState = new PairingState(partnerKey, message.getTimestamp(), fingerprint);
-
         Log.d(TAG, "Pending pairing fingerprint: " + fingerprint);
-        Log.d(TAG, "→ Waiting for user confirmation before saving");
-
         if (callback != null) callback.onPartnerKeyReceived(fingerprint);
     }
 
     private void handleAckMessage() {
-        Log.d(TAG, "✅ ACK received — partner confirmed pairing on their side");
+        Log.d(TAG, "✅ ACK received — partner confirmed pairing");
         if (callback != null) callback.onPairingComplete();
     }
 }
