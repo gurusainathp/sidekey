@@ -7,13 +7,22 @@ import android.bluetooth.BluetoothSocket;
 import android.content.Context;
 import android.util.Log;
 
+import com.sidekey.chat.protocol.FrameDecoder;
+import com.sidekey.chat.protocol.FrameEncoder;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
 /**
- * BluetoothService — raw transport layer only.
- * No crypto. No pairing logic. Just moves bytes.
+ * BluetoothService — raw transport layer.
+ *
+ * All messages are length-prefixed frames:
+ *   send: payload → FrameEncoder.encode() → write to socket
+ *   recv: FrameDecoder.decode() → callback(payload)
+ *
+ * Callers send and receive raw payload bytes only.
+ * They never see the length header.
  */
 public class BluetoothService {
 
@@ -28,20 +37,14 @@ public class BluetoothService {
     private ConnectThread   connectThread;
     private ConnectedThread connectedThread;
 
-    // Tracks whether a pairing exchange is in progress — used only for logging
     private volatile boolean pairingInProgress = false;
 
     public BluetoothService(Context context) {
         this.adapter = BluetoothAdapter.getDefaultAdapter();
     }
 
-    public void setListener(BluetoothListener listener) {
-        this.listener = listener;
-    }
-
-    public void setCallback(BluetoothCallback callback) {
-        this.callback = callback;
-    }
+    public void setListener(BluetoothListener listener) { this.listener = listener; }
+    public void setCallback(BluetoothCallback callback) { this.callback = callback; }
 
     public boolean isBluetoothEnabled() {
         return adapter != null && adapter.isEnabled();
@@ -49,7 +52,6 @@ public class BluetoothService {
 
     public void setPairingInProgress(boolean inProgress) {
         this.pairingInProgress = inProgress;
-        Log.d(TAG, "Pairing in progress: " + inProgress);
     }
 
     // -------------------------------------------------------------------------
@@ -72,21 +74,21 @@ public class BluetoothService {
         Log.d(TAG, "Connecting to: " + device.getName() + " [" + device.getAddress() + "]");
     }
 
-    public void send(byte[] data) {
+    /**
+     * Sends payload as a length-prefixed frame.
+     * Callers pass raw payload — framing is transparent to them.
+     */
+    public void send(byte[] payload) {
         ConnectedThread thread;
-        synchronized (this) {
-            thread = connectedThread;
-        }
+        synchronized (this) { thread = connectedThread; }
+
         if (thread == null) {
             Log.e(TAG, "send() called but not connected");
             if (listener != null) listener.onError("Not connected");
             if (callback != null) callback.onError("Not connected");
             return;
         }
-        if (pairingInProgress) {
-            Log.d(TAG, "Sending pairing data (" + data.length + " bytes)");
-        }
-        thread.write(data);
+        thread.write(payload);
     }
 
     public synchronized void stop() {
@@ -102,7 +104,6 @@ public class BluetoothService {
 
     private synchronized void startConnectedThread(BluetoothSocket socket) {
         cancelConnectedThread();
-
         connectedThread = new ConnectedThread(socket);
         connectedThread.start();
 
@@ -120,11 +121,9 @@ public class BluetoothService {
     private void cancelAcceptThread() {
         if (acceptThread != null) { acceptThread.cancel();    acceptThread    = null; }
     }
-
     private void cancelConnectThread() {
         if (connectThread != null) { connectThread.cancel();  connectThread   = null; }
     }
-
     private void cancelConnectedThread() {
         if (connectedThread != null) { connectedThread.cancel(); connectedThread = null; }
     }
@@ -141,11 +140,9 @@ public class BluetoothService {
             BluetoothServerSocket tmp = null;
             try {
                 tmp = adapter.listenUsingRfcommWithServiceRecord(
-                        BluetoothConstants.APP_NAME,
-                        BluetoothConstants.APP_UUID
-                );
+                        BluetoothConstants.APP_NAME, BluetoothConstants.APP_UUID);
             } catch (IOException e) {
-                Log.e(TAG, "AcceptThread: listenUsingRfcomm failed — " + e.getMessage());
+                Log.e(TAG, "AcceptThread: listen failed — " + e.getMessage());
                 if (listener != null) listener.onError("Server socket failed: " + e.getMessage());
                 if (callback != null) callback.onError("Server socket failed: " + e.getMessage());
             }
@@ -210,7 +207,6 @@ public class BluetoothService {
             if (socket == null) return;
             adapter.cancelDiscovery();
 
-            Log.d(TAG, "ConnectThread: calling connect()...");
             try {
                 socket.connect();
                 Log.d(TAG, "ConnectThread: connect() succeeded");
@@ -264,19 +260,19 @@ public class BluetoothService {
         @Override
         public void run() {
             Log.d(TAG, "ConnectedThread: read loop started");
-            byte[] buffer = new byte[4096];
 
+            // FrameDecoder.decode() blocks until exactly one full frame arrives.
+            // No partial reads. No buffer juggling.
             while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    int bytes = inputStream.read(buffer);
-                    if (bytes > 0) {
-                        byte[] received = new byte[bytes];
-                        System.arraycopy(buffer, 0, received, 0, bytes);
-                        Log.d(TAG, "Received " + bytes + " bytes"
-                                + (pairingInProgress ? " [pairing in progress]" : ""));
-                        if (listener != null) listener.onDataReceived(received);
-                        if (callback != null) callback.onMessage(received);
-                    }
+                    byte[] payload = FrameDecoder.decode(inputStream);
+
+                    Log.d(TAG, "BT: frame received len=" + payload.length);
+
+                    // Deliver raw payload to listeners — they never see the header
+                    if (listener != null) listener.onDataReceived(payload);
+                    if (callback != null) callback.onMessage(payload);
+
                 } catch (IOException e) {
                     if (!Thread.currentThread().isInterrupted()) {
                         Log.e(TAG, "ConnectedThread: read error — " + e.getMessage());
@@ -290,11 +286,13 @@ public class BluetoothService {
             Log.d(TAG, "ConnectedThread: read loop ended");
         }
 
-        void write(byte[] data) {
+        void write(byte[] payload) {
             try {
-                outputStream.write(data);
+                // Encode into frame before writing
+                byte[] frame = FrameEncoder.encode(payload);
+                Log.d(TAG, "BT: sending frame len=" + frame.length);
+                outputStream.write(frame);
                 outputStream.flush();
-                Log.d(TAG, "Sent " + data.length + " bytes");
             } catch (IOException e) {
                 Log.e(TAG, "ConnectedThread: write failed — " + e.getMessage());
                 if (listener != null) listener.onError("Send failed: " + e.getMessage());
