@@ -4,134 +4,149 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="16dp"
+    android:padding="12dp"
     android:background="#121212">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="SideKey"
-        android:textSize="28sp"
-        android:textStyle="bold"
-        android:textColor="#FFFFFF"
-        android:layout_marginBottom="8dp" />
-
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Bluetooth: checking..."
-        android:textSize="14sp"
-        android:textColor="#AAAAAA"
-        android:layout_marginBottom="16dp" />
-
-    <!-- Role selection -->
+    <!-- Header row -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="8dp">
+        android:gravity="center_vertical"
+        android:layout_marginBottom="6dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="SideKey"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Checking..."
+            android:textSize="12sp"
+            android:textColor="#AAAAAA"
+            android:gravity="end"
+            android:maxLines="2" />
+
+    </LinearLayout>
+
+    <!-- Role buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="6dp">
 
         <Button
             android:id="@+id/btnServer"
             android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:layout_weight="1"
-            android:text="📡 Start Server"
-            android:layout_marginEnd="8dp"
+            android:text="📡 Server"
+            android:textSize="13sp"
+            android:layout_marginEnd="6dp"
             android:backgroundTint="#1E88E5" />
 
         <Button
             android:id="@+id/btnClient"
             android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:layout_weight="1"
-            android:text="🔗 Find and Connect"
+            android:text="🔗 Connect"
+            android:textSize="13sp"
             android:backgroundTint="#43A047" />
 
     </LinearLayout>
 
-    <!-- Fingerprint confirm/cancel — hidden until fingerprint arrives -->
+    <!-- Confirm / Cancel — server only, hidden until fingerprint arrives -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="8dp">
+        android:layout_marginBottom="6dp">
 
         <Button
             android:id="@+id/btnConfirm"
             android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:layout_weight="1"
             android:text="✅ Confirm Pair"
-            android:layout_marginEnd="8dp"
+            android:textSize="13sp"
+            android:layout_marginEnd="6dp"
             android:backgroundTint="#2E7D32"
             android:visibility="gone" />
 
         <Button
             android:id="@+id/btnCancel"
             android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:layout_weight="1"
             android:text="❌ Cancel"
+            android:textSize="13sp"
             android:backgroundTint="#B71C1C"
             android:visibility="gone" />
 
     </LinearLayout>
 
-    <!-- Message input — hidden until chat is ready -->
+    <!-- Message input — hidden until chat ready -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="8dp">
+        android:layout_marginBottom="6dp">
 
         <EditText
             android:id="@+id/etMessage"
             android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:layout_weight="1"
-            android:hint="Type a message..."
+            android:hint="Message..."
+            android:textSize="13sp"
             android:textColor="#FFFFFF"
-            android:textColorHint="#888888"
-            android:backgroundTint="#333333"
-            android:layout_marginEnd="8dp"
+            android:textColorHint="#666666"
+            android:backgroundTint="#2A2A2A"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:layout_marginEnd="6dp"
             android:visibility="gone"
-            android:inputType="text" />
+            android:inputType="text"
+            android:imeOptions="actionSend" />
 
         <Button
             android:id="@+id/btnSend"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:text="Send"
+            android:textSize="13sp"
             android:backgroundTint="#6A1B9A"
             android:visibility="gone" />
 
     </LinearLayout>
 
-    <!-- Live log -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Log:"
-        android:textSize="12sp"
-        android:textColor="#888888"
-        android:layout_marginBottom="4dp" />
-
+    <!-- Log -->
     <ScrollView
         android:id="@+id/scrollLog"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="#1E1E1E"
-        android:padding="8dp">
+        android:background="#1A1A1A"
+        android:padding="6dp"
+        android:fadeScrollbars="false">
 
         <TextView
             android:id="@+id/tvLog"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text=""
-            android:textSize="12sp"
+            android:textSize="11sp"
+            android:lineSpacingMultiplier="1.2"
             android:textColor="#00FF99"
             android:fontFamily="monospace" />
 

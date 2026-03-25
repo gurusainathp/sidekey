@@ -2,33 +2,31 @@ package com.sidekey.chat.pairing;
 
 /**
  * Callback interface for PairingManager events.
- *
- * PairingManager calls these after processing incoming Bluetooth data.
- * MainActivity (or a PairingActivity later) implements this to update the UI.
- *
- * All callbacks may arrive on a background thread.
- * Implementors must use runOnUiThread() before touching any views.
+ * All callbacks may fire on a background thread — use runOnUiThread for UI.
  */
 public interface PairingCallback {
 
     /**
-     * Partner's public key was received and saved.
-     * Show the fingerprint to the user for visual verification.
+     * Partner's public key was received and stored in pending state (NOT saved yet).
+     * Show fingerprint to user for verification.
      *
      * @param fingerprint  formatted key fingerprint e.g. "A1F9-22C8-77D1"
      */
     void onPartnerKeyReceived(String fingerprint);
 
     /**
-     * Both sides have confirmed pairing (ACK received).
-     * Safe to navigate to chat screen.
+     * ACK received from partner — they confirmed our key on their side.
+     * Client uses this to trigger session key derivation (no button needed).
+     */
+    void onAckReceived();
+
+    /**
+     * Pairing fully complete — both sides confirmed.
      */
     void onPairingComplete();
 
     /**
-     * Something went wrong during pairing.
-     *
-     * @param reason  human-readable error description
+     * Something went wrong.
      */
     void onPairingError(String reason);
 }

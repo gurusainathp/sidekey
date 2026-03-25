@@ -5,22 +5,17 @@ import android.util.Log;
 
 import com.sidekey.chat.bluetooth.BluetoothService;
 import com.sidekey.chat.crypto.MessageCipher;
-import com.sidekey.chat.crypto.SecureStorage;
+import com.sidekey.chat.crypto.SessionStore;
 import com.sidekey.chat.model.ChatMessage;
-import com.sidekey.chat.pairing.PairingManager;
 import com.sidekey.chat.utils.JsonUtil;
 
 /**
  * ChatManager — brain of the encrypted messaging flow.
  *
- * Responsibilities:
- *   - Build and encrypt outgoing messages
- *   - Receive, parse, and decrypt incoming messages
- *   - Route decrypted text to ChatCallback for UI display
+ * Uses SessionStore (symmetric session key) for all encryption.
+ * No longer depends on PairingManager or raw key material.
  *
- * Does NOT touch Bluetooth directly (passes bytes to BluetoothService).
- * Does NOT touch UI directly (fires ChatCallback).
- * Only active after pairing is complete.
+ * Only active after pairing is confirmed and session is ready.
  */
 public class ChatManager {
 
@@ -28,30 +23,21 @@ public class ChatManager {
 
     private final BluetoothService bluetoothService;
     private final MessageCipher    cipher;
+    private final SessionStore     sessionStore;
 
     private ChatCallback callback;
 
-    /**
-     * @param context          Android context for SecureStorage
-     * @param pairingManager   used to fetch key material
-     * @param bluetoothService used to send encrypted bytes
-     */
     public ChatManager(Context context,
-                       PairingManager pairingManager,
+                       SessionStore sessionStore,
                        BluetoothService bluetoothService) {
-
         this.bluetoothService = bluetoothService;
+        this.sessionStore     = sessionStore;
+        this.cipher           = new MessageCipher(sessionStore);
 
-        // Pull key material from SecureStorage via PairingManager getters
-        byte[] ownPrivKey      = pairingManager.getOwnPrivateKey();
-        byte[] partnerPubKey   = pairingManager.getPartnerPublicKey();
-
-        if (ownPrivKey == null || partnerPubKey == null) {
-            Log.e(TAG, "ChatManager: key material missing — is pairing complete?");
-            this.cipher = null;
+        if (sessionStore.isReady()) {
+            Log.d(TAG, "ChatManager: session ready ✅");
         } else {
-            this.cipher = new MessageCipher(ownPrivKey, partnerPubKey);
-            Log.d(TAG, "ChatManager ready — cipher initialised");
+            Log.e(TAG, "ChatManager: session NOT ready — messages will fail until session is derived");
         }
     }
 
@@ -60,17 +46,13 @@ public class ChatManager {
     }
 
     // -------------------------------------------------------------------------
-    // Send an encrypted message
+    // Send
     // -------------------------------------------------------------------------
 
-    /**
-     * Encrypts plaintext and sends it over Bluetooth.
-     * Call only after pairing is complete.
-     */
     public void sendMessage(String plaintext) {
-        if (cipher == null) {
-            Log.e(TAG, "sendMessage: cipher not ready — pairing incomplete?");
-            if (callback != null) callback.onError("Cannot send — not paired");
+        if (!sessionStore.isReady()) {
+            Log.e(TAG, "ChatManager: session not ready — cannot send");
+            if (callback != null) callback.onError("Session not ready — pair first");
             return;
         }
 
@@ -96,27 +78,18 @@ public class ChatManager {
         bluetoothService.send(json.getBytes());
         Log.d(TAG, "✅ Encrypted message sent");
 
-        // Echo to own UI so sender sees their message
         if (callback != null) callback.onMessageSent(plaintext);
     }
 
     // -------------------------------------------------------------------------
-    // Handle raw bytes arriving from BluetoothCallback.onMessage()
+    // Receive — returns true if consumed as a chat message
     // -------------------------------------------------------------------------
 
-    /**
-     * Called by BluetoothCallback when raw bytes arrive.
-     * Returns true if the bytes were a chat message (consumed).
-     * Returns false if bytes should be passed to PairingManager instead.
-     */
     public boolean handleIncoming(byte[] data) {
         String json = new String(data);
 
         ChatMessage message = JsonUtil.chatFromJson(json);
-        if (message == null) {
-            // Not a chat message — let PairingManager handle it
-            return false;
-        }
+        if (message == null) return false; // not a chat message
 
         switch (message.getType()) {
             case ChatMessage.TYPE_MSG:
@@ -126,7 +99,7 @@ public class ChatManager {
                 Log.d(TAG, "Message ACK received");
                 return true;
             default:
-                Log.w(TAG, "Unknown chat message type: " + message.getType());
+                Log.w(TAG, "Unknown chat type: " + message.getType());
                 return false;
         }
     }
@@ -136,13 +109,11 @@ public class ChatManager {
     // -------------------------------------------------------------------------
 
     private void handleIncomingMessage(ChatMessage message) {
-        if (cipher == null) {
-            Log.e(TAG, "handleIncomingMessage: cipher not ready");
-            if (callback != null) callback.onError("Cannot decrypt — not paired");
+        if (!sessionStore.isReady()) {
+            Log.e(TAG, "handleIncomingMessage: session not ready — cannot decrypt");
+            if (callback != null) callback.onError("Session not ready");
             return;
         }
-
-        Log.d(TAG, "Encrypted message received — decrypting...");
 
         String plaintext = cipher.decryptMessage(message.getPayload());
         if (plaintext == null) {
