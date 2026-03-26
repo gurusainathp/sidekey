@@ -25,11 +25,12 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
-import com.sidekey.chat.bluetooth.BluetoothCallback;
 import com.sidekey.chat.bluetooth.BluetoothListener;
 import com.sidekey.chat.bluetooth.BluetoothService;
+import com.sidekey.chat.connection.ConnectionManager;
+import com.sidekey.chat.connection.ConnectionState;
 import com.sidekey.chat.crypto.SessionStore;
-import com.sidekey.chat.pairing.PairingCallback;
+import com.sidekey.chat.pairing.AutoSessionStarter;
 import com.sidekey.chat.pairing.PairingManager;
 import com.sidekey.chat.ui.PairingController;
 
@@ -37,12 +38,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity
+        implements AutoSessionStarter.UICallback,
+        ConnectionManager.ConnectionStateListener {
 
     private static final String TAG = "SideKey";
-    private static final int PERMISSION_REQUEST_CODE = 1001;
+    private static final int    PERMISSION_REQUEST_CODE = 1001;
 
-    // UI
+    // ── UI ────────────────────────────────────────────────────────────────────
     private TextView   tvStatus;
     private TextView   tvLog;
     private ScrollView scrollLog;
@@ -53,13 +56,15 @@ public class MainActivity extends AppCompatActivity {
     private EditText   etMessage;
     private Button     btnSend;
 
-    // Core
-    private BluetoothService  bluetoothService;
-    private PairingManager    pairingManager;
-    private PairingController pairingController;
-    private ChatManager       chatManager;
-    private SessionStore      sessionStore;
-    private BluetoothAdapter  bluetoothAdapter;
+    // ── Core ─────────────────────────────────────────────────────────────────
+    private BluetoothAdapter    bluetoothAdapter;
+    private BluetoothService    bluetoothService;
+    private PairingManager      pairingManager;
+    private AutoSessionStarter  autoSessionStarter;
+    private PairingController   pairingController;
+    private ChatManager         chatManager;
+    private SessionStore        sessionStore;
+    private ConnectionManager   connectionManager;
 
     private boolean isServer = false;
 
@@ -67,19 +72,14 @@ public class MainActivity extends AppCompatActivity {
             registerForActivityResult(
                     new ActivityResultContracts.StartActivityForResult(),
                     result -> {
-                        if (bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
-                            tvStatus.setText("Bluetooth ready");
-                            log("✅ Bluetooth enabled");
-                        } else {
-                            tvStatus.setText("Bluetooth is OFF");
-                            log("⚠️ Bluetooth not enabled");
-                        }
-                    }
-            );
+                        boolean on = bluetoothAdapter != null && bluetoothAdapter.isEnabled();
+                        tvStatus.setText(on ? "Bluetooth ready" : "Bluetooth is OFF");
+                        log(on ? "✅ Bluetooth enabled" : "⚠️ Bluetooth not enabled");
+                    });
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // Lifecycle
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -88,25 +88,35 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
+            Insets sb = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(sb.left, sb.top, sb.right, sb.bottom);
             return insets;
         });
 
         bindViews();
 
-        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-        sessionStore     = new SessionStore();
+        // ── State machine ─────────────────────────────────────────────────────
+        connectionManager = ConnectionManager.getInstance();
+        connectionManager.setListener(this);
 
+        // ── Crypto + session ──────────────────────────────────────────────────
+        sessionStore   = new SessionStore();
         pairingManager = new PairingManager(this);
-        pairingManager.setCallback(pairingCallback);
 
+        // ── Transport ─────────────────────────────────────────────────────────
+        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         bluetoothService = new BluetoothService(this);
         bluetoothService.setListener(btListener);
-        bluetoothService.setCallback(btCallback);
 
+        // ── AutoSessionStarter owns BluetoothCallback + PairingCallback ───────
+        autoSessionStarter = new AutoSessionStarter(
+                this, pairingManager, bluetoothService, sessionStore, connectionManager);
+        autoSessionStarter.setUICallback(this);
+        bluetoothService.setCallback(autoSessionStarter);
+
+        // ── PairingController only used by server Confirm button ──────────────
         pairingController = new PairingController(
-                this, pairingManager, bluetoothService, sessionStore);
+                pairingManager, bluetoothService, autoSessionStarter);
 
         setupButtonListeners();
         setChatInputVisible(false);
@@ -122,97 +132,84 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         bluetoothService.stop();
         sessionStore.clear();
+        connectionManager.setListener(null);
     }
 
-    // -------------------------------------------------------------------------
-    // View binding
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // ConnectionStateListener
+    // =========================================================================
 
-    private void bindViews() {
-        tvStatus   = findViewById(R.id.tvStatus);
-        tvLog      = findViewById(R.id.tvLog);
-        scrollLog  = findViewById(R.id.scrollLog);
-        btnServer  = findViewById(R.id.btnServer);
-        btnClient  = findViewById(R.id.btnClient);
-        btnConfirm = findViewById(R.id.btnConfirm);
-        btnCancel  = findViewById(R.id.btnCancel);
-        etMessage  = findViewById(R.id.etMessage);
-        btnSend    = findViewById(R.id.btnSend);
+    @Override
+    public void onStateChanged(ConnectionState newState) {
+        runOnUiThread(() -> {
+            switch (newState) {
+                case DISCONNECTED:
+                    tvStatus.setText("Disconnected");
+                    btnServer.setEnabled(true);
+                    btnClient.setEnabled(true);
+                    setPairingConfirmVisible(false);
+                    setChatInputVisible(false);
+                    break;
+                case CONNECTING:
+                    tvStatus.setText("Connecting...");
+                    break;
+                case CONNECTED:
+                    tvStatus.setText("Connected");
+                    break;
+                case PAIRING:
+                    tvStatus.setText("Pairing...");
+                    break;
+                case SESSION_READY:
+                    tvStatus.setText("Paired ✅ — chat ready");
+                    log("✅ Session ready — chat open");
+                    break;
+            }
+        });
     }
 
-    // -------------------------------------------------------------------------
-    // Buttons
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // AutoSessionStarter.UICallback
+    // =========================================================================
 
-    private void setupButtonListeners() {
-
-        btnServer.setOnClickListener(v -> {
-            if (!isBluetoothReady()) return;
-            isServer = true;
-            log("Role: SERVER");
-            log("Your fingerprint: " + pairingManager.getOwnFingerprint());
-            btnServer.setEnabled(false);
-            btnClient.setEnabled(false);
-            tvStatus.setText("Waiting for connection...");
-            bluetoothService.startServer();
+    @Override
+    public void onFingerprintReady(String fingerprint) {
+        runOnUiThread(() -> {
+            log("─────────────────────────");
+            log("You:     " + pairingManager.getOwnFingerprint());
+            log("Partner: " + fingerprint);
+            log("─────────────────────────");
+            if (isServer) {
+                log("→ Confirm if fingerprints match");
+                tvStatus.setText("Verify fingerprints");
+                setPairingConfirmVisible(true);
+            } else {
+                log("→ Waiting for server to confirm...");
+                tvStatus.setText("Waiting for confirmation...");
+            }
         });
+    }
 
-        btnClient.setOnClickListener(v -> {
-            if (!isBluetoothReady()) return;
-            isServer = false;
-            showDevicePicker();
-        });
-
-        btnConfirm.setOnClickListener(v -> {
-            log("→ Confirming pairing...");
-            pairingController.onPairConfirmed();
+    @Override
+    public void onSessionReady() {
+        runOnUiThread(() -> {
             setPairingConfirmVisible(false);
             initChatManager();
         });
+    }
 
-        btnCancel.setOnClickListener(v -> {
-            log("→ Pairing cancelled");
-            pairingController.onPairCancelled();
-            setPairingConfirmVisible(false);
-            tvStatus.setText("Pairing cancelled");
+    @Override
+    public void onError(String reason) {
+        runOnUiThread(() -> {
+            log("❌ " + reason);
+            tvStatus.setText("Error — see log");
             btnServer.setEnabled(true);
             btnClient.setEnabled(true);
         });
-
-        btnSend.setOnClickListener(v -> {
-            if (chatManager == null) { log("❌ Not paired yet"); return; }
-            String text = etMessage.getText().toString().trim();
-            if (text.isEmpty()) return;
-            chatManager.sendMessage(text);
-            etMessage.setText("");
-        });
     }
 
-    // -------------------------------------------------------------------------
-    // BluetoothCallback — background thread
-    // -------------------------------------------------------------------------
-
-    private final BluetoothCallback btCallback = new BluetoothCallback() {
-        @Override
-        public void onConnected() {
-            bluetoothService.setPairingInProgress(true);
-            byte[] own = pairingManager.createOwnMessage();
-            if (own != null) bluetoothService.send(own);
-        }
-
-        @Override
-        public void onMessage(byte[] data) {
-            if (chatManager != null && chatManager.handleIncoming(data)) return;
-            pairingManager.handleIncoming(data);
-        }
-
-        @Override public void onDisconnected() { bluetoothService.setPairingInProgress(false); }
-        @Override public void onError(String m) { bluetoothService.setPairingInProgress(false); }
-    };
-
-    // -------------------------------------------------------------------------
-    // BluetoothListener — UI thread
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // BluetoothListener — UI only
+    // =========================================================================
 
     private final BluetoothListener btListener = new BluetoothListener() {
 
@@ -220,103 +217,35 @@ public class MainActivity extends AppCompatActivity {
         public void onConnected(BluetoothDevice device) {
             String name = getDeviceName(device);
             runOnUiThread(() -> {
+                connectionManager.setState(ConnectionState.CONNECTED);
                 log("✅ Connected: " + name);
-                tvStatus.setText("Connected: " + name);
-                if (!isServer) {
-                    log("Your fingerprint: " + pairingManager.getOwnFingerprint());
-                    log("→ Waiting for server to confirm...");
-                }
+                if (!isServer) log("→ Waiting for server to confirm fingerprint...");
             });
         }
 
         @Override
         public void onDataReceived(byte[] data) {
-            // Silent — avoids log spam on every packet
+            // Silent — avoids log spam, framing handles it
         }
 
         @Override
         public void onDisconnected() {
             runOnUiThread(() -> {
                 log("⚠️ Disconnected");
-                tvStatus.setText("Disconnected");
-                btnServer.setEnabled(true);
-                btnClient.setEnabled(true);
-                setPairingConfirmVisible(false);
-                setChatInputVisible(false);
+                connectionManager.reset();
+                chatManager = null;
             });
         }
 
         @Override
         public void onError(String message) {
-            runOnUiThread(() -> {
-                log("❌ BT: " + message);
-                tvStatus.setText("Error — see log");
-                btnServer.setEnabled(true);
-                btnClient.setEnabled(true);
-            });
+            runOnUiThread(() -> log("❌ BT: " + message));
         }
     };
 
-    // -------------------------------------------------------------------------
-    // PairingCallback
-    // -------------------------------------------------------------------------
-
-    private final PairingCallback pairingCallback = new PairingCallback() {
-
-        @Override
-        public void onPartnerKeyReceived(String partnerFingerprint) {
-            pairingController.onFingerprintReady(partnerFingerprint);
-            runOnUiThread(() -> {
-                log("─────────────────────────");
-                log("You:     " + pairingManager.getOwnFingerprint());
-                log("Partner: " + partnerFingerprint);
-                log("─────────────────────────");
-                bluetoothService.setPairingInProgress(false);
-                if (isServer) {
-                    log("→ Confirm if fingerprints match");
-                    tvStatus.setText("Verify fingerprints");
-                    setPairingConfirmVisible(true);
-                } else {
-                    log("→ Waiting for server...");
-                    tvStatus.setText("Waiting for confirmation...");
-                }
-            });
-        }
-
-        @Override
-        public void onAckReceived() {
-            runOnUiThread(() -> {
-                log("✅ Server confirmed — deriving session...");
-                pairingController.onAckReceived();
-                initChatManager();
-            });
-        }
-
-        @Override
-        public void onPairingComplete() {
-            runOnUiThread(() -> {
-                log("✅ Paired");
-                tvStatus.setText("Paired ✅");
-                setPairingConfirmVisible(false);
-                if (chatManager == null) initChatManager();
-            });
-        }
-
-        @Override
-        public void onPairingError(String reason) {
-            runOnUiThread(() -> {
-                log("❌ Pairing error: " + reason);
-                tvStatus.setText("Pairing failed");
-                setPairingConfirmVisible(false);
-                btnServer.setEnabled(true);
-                btnClient.setEnabled(true);
-            });
-        }
-    };
-
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // ChatCallback
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     private final ChatCallback chatCallback = new ChatCallback() {
         @Override
@@ -333,25 +262,93 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    // -------------------------------------------------------------------------
-    // ChatManager init — called after session is ready
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Button setup
+    // =========================================================================
 
-    private void initChatManager() {
-        if (chatManager != null) return;
-        // ← KEY CHANGE: pass sessionStore, not pairingManager
-        chatManager = new ChatManager(this, sessionStore, bluetoothService);
-        chatManager.setCallback(chatCallback);
-        Log.d(TAG, "ChatManager initialised");
-        runOnUiThread(() -> {
-            log("💬 Chat ready");
-            setChatInputVisible(true);
+    private void setupButtonListeners() {
+
+        btnServer.setOnClickListener(v -> {
+            if (!isBluetoothReady()) return;
+            isServer = true;
+            connectionManager.setState(ConnectionState.CONNECTING);
+            log("Role: SERVER");
+            log("Your fingerprint: " + pairingManager.getOwnFingerprint());
+            btnServer.setEnabled(false);
+            btnClient.setEnabled(false);
+            bluetoothService.startServer();
+        });
+
+        btnClient.setOnClickListener(v -> {
+            if (!isBluetoothReady()) return;
+            isServer = false;
+            showDevicePicker();
+        });
+
+        btnConfirm.setOnClickListener(v -> {
+            log("→ Confirming pairing...");
+            pairingController.onPairConfirmed();
+            setPairingConfirmVisible(false);
+            // ChatManager init happens via onSessionReady() callback
+        });
+
+        btnCancel.setOnClickListener(v -> {
+            log("→ Pairing cancelled");
+            pairingController.onPairCancelled();
+            setPairingConfirmVisible(false);
+            connectionManager.reset();
+        });
+
+        btnSend.setOnClickListener(v -> {
+            if (chatManager == null) { log("❌ Not paired yet"); return; }
+            String text = etMessage.getText().toString().trim();
+            if (text.isEmpty()) return;
+            chatManager.sendMessage(text);
+            etMessage.setText("");
         });
     }
 
-    // -------------------------------------------------------------------------
-    // UI helpers
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // ChatManager init — called from onSessionReady()
+    // =========================================================================
+
+    private void initChatManager() {
+        if (chatManager != null) return;
+        chatManager = new ChatManager(this, sessionStore, bluetoothService);
+        chatManager.setCallback(chatCallback);
+        Log.d(TAG, "ChatManager initialised");
+        log("💬 Chat ready");
+        setChatInputVisible(true);
+
+        // Wire chat message routing — incoming bytes go to ChatManager first
+        // Override the BT callback to handle chat after session is ready
+        bluetoothService.setCallback(new com.sidekey.chat.bluetooth.BluetoothCallback() {
+            @Override public void onConnected() { autoSessionStarter.onConnected(); }
+            @Override public void onMessage(byte[] data) {
+                if (!chatManager.handleIncoming(data)) {
+                    pairingManager.handleIncoming(data);
+                }
+            }
+            @Override public void onDisconnected() { autoSessionStarter.onDisconnected(); }
+            @Override public void onError(String m) { autoSessionStarter.onError(m); }
+        });
+    }
+
+    // =========================================================================
+    // View helpers
+    // =========================================================================
+
+    private void bindViews() {
+        tvStatus   = findViewById(R.id.tvStatus);
+        tvLog      = findViewById(R.id.tvLog);
+        scrollLog  = findViewById(R.id.scrollLog);
+        btnServer  = findViewById(R.id.btnServer);
+        btnClient  = findViewById(R.id.btnClient);
+        btnConfirm = findViewById(R.id.btnConfirm);
+        btnCancel  = findViewById(R.id.btnCancel);
+        etMessage  = findViewById(R.id.etMessage);
+        btnSend    = findViewById(R.id.btnSend);
+    }
 
     private void setPairingConfirmVisible(boolean visible) {
         int v = (visible && isServer) ? View.VISIBLE : View.GONE;
@@ -365,9 +362,9 @@ public class MainActivity extends AppCompatActivity {
         btnSend.setVisibility(v);
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // Device picker
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     private void showDevicePicker() {
         if (bluetoothAdapter == null) { log("Bluetooth not available"); return; }
@@ -380,11 +377,12 @@ public class MainActivity extends AppCompatActivity {
             }
             bonded = bluetoothAdapter.getBondedDevices();
         } catch (SecurityException e) {
-            log("❌ Security exception: " + e.getMessage()); return;
+            log("❌ Security: " + e.getMessage()); return;
         }
         if (bonded == null || bonded.isEmpty()) {
             log("No bonded devices. Pair in Android Settings first."); return;
         }
+
         final List<BluetoothDevice> list  = new ArrayList<>(bonded);
         final String[]              names = new String[list.size()];
         for (int i = 0; i < list.size(); i++)
@@ -394,21 +392,19 @@ public class MainActivity extends AppCompatActivity {
                 .setTitle("Select device")
                 .setItems(names, (d, which) -> {
                     BluetoothDevice chosen = list.get(which);
-                    String name = getDeviceName(chosen);
-                    log("CLIENT — connecting to: " + name);
-                    log("Your fingerprint: " + pairingManager.getOwnFingerprint());
+                    connectionManager.setState(ConnectionState.CONNECTING);
+                    log("CLIENT — connecting to: " + getDeviceName(chosen));
                     btnServer.setEnabled(false);
                     btnClient.setEnabled(false);
-                    tvStatus.setText("Connecting to " + name + "...");
+                    tvStatus.setText("Connecting...");
                     bluetoothService.connectToDevice(chosen);
                 })
-                .setNegativeButton("Cancel", null)
-                .show();
+                .setNegativeButton("Cancel", null).show();
     }
 
-    // -------------------------------------------------------------------------
-    // Bluetooth state
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Bluetooth state / permissions
+    // =========================================================================
 
     private boolean isBluetoothReady() {
         if (bluetoothAdapter == null) { log("❌ Bluetooth not supported"); return false; }
@@ -425,10 +421,8 @@ public class MainActivity extends AppCompatActivity {
             tvStatus.setText("Bluetooth not supported");
             btnServer.setEnabled(false);
             btnClient.setEnabled(false);
-        } else if (!bluetoothAdapter.isEnabled()) {
-            tvStatus.setText("Bluetooth is OFF");
         } else {
-            tvStatus.setText("Bluetooth ready");
+            tvStatus.setText(bluetoothAdapter.isEnabled() ? "Bluetooth ready" : "Bluetooth is OFF");
         }
     }
 
@@ -475,14 +469,14 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // Helpers
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     private String getDeviceName(BluetoothDevice device) {
         try {
-            String name = device.getName();
-            return name != null ? name : device.getAddress();
+            String n = device.getName();
+            return n != null ? n : device.getAddress();
         } catch (SecurityException e) {
             return device.getAddress();
         }
