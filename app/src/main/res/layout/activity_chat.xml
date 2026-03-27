@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#121212">
+
+    <!-- Message list fills available space -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvMessages"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:padding="8dp"
+        android:clipToPadding="false"
+        android:scrollbars="none" />
+
+    <!-- Divider -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#2A2A2A" />
+
+    <!-- Input row pinned to bottom -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center_vertical"
+        android:background="#1A1A1A">
+
+        <EditText
+            android:id="@+id/etChatInput"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:hint="Message..."
+            android:textColor="#FFFFFF"
+            android:textColorHint="#666666"
+            android:textSize="15sp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:background="@drawable/bg_input_field"
+            android:inputType="textMultiLine|textCapSentences"
+            android:imeOptions="actionSend"
+            android:maxLines="3"
+            android:layout_marginEnd="8dp" />
+
+        <ImageButton
+            android:id="@+id/btnChatSend"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:src="@android:drawable/ic_menu_send"
+            android:background="@drawable/bg_send_button"
+            android:contentDescription="Send"
+            android:tint="#FFFFFF" />
+
+    </LinearLayout>
+
+</LinearLayout>

@@ -7,7 +7,7 @@
     android:padding="12dp"
     android:background="#121212">
 
-    <!-- Header row -->
+    <!-- Header -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -65,7 +65,7 @@
 
     </LinearLayout>
 
-    <!-- Confirm / Cancel — server only, hidden until fingerprint arrives -->
+    <!-- Fingerprint Confirm / Cancel — server only, hidden until key arrives -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -95,42 +95,15 @@
 
     </LinearLayout>
 
-    <!-- Message input — hidden until chat ready -->
-    <LinearLayout
-        android:layout_width="match_parent"
+    <!-- Pairing log — fills remaining space -->
+    <TextView
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginBottom="6dp">
+        android:text="Log:"
+        android:textSize="11sp"
+        android:textColor="#888888"
+        android:layout_marginBottom="4dp" />
 
-        <EditText
-            android:id="@+id/etMessage"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:hint="Message..."
-            android:textSize="13sp"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#666666"
-            android:backgroundTint="#2A2A2A"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
-            android:layout_marginEnd="6dp"
-            android:visibility="gone"
-            android:inputType="text"
-            android:imeOptions="actionSend" />
-
-        <Button
-            android:id="@+id/btnSend"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:text="Send"
-            android:textSize="13sp"
-            android:backgroundTint="#6A1B9A"
-            android:visibility="gone" />
-
-    </LinearLayout>
-
-    <!-- Log -->
     <ScrollView
         android:id="@+id/scrollLog"
         android:layout_width="match_parent"

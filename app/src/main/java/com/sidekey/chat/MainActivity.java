@@ -11,7 +11,6 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -36,6 +35,7 @@ import com.sidekey.chat.messaging.TransportSender;
 import com.sidekey.chat.pairing.AutoSessionStarter;
 import com.sidekey.chat.pairing.PairingManager;
 import com.sidekey.chat.ui.PairingController;
+import com.sidekey.chat.ui.chat.ChatActivity;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,8 +56,6 @@ public class MainActivity extends AppCompatActivity
     private Button     btnClient;
     private Button     btnConfirm;
     private Button     btnCancel;
-    private EditText   etMessage;
-    private Button     btnSend;
 
     // ── Core ──────────────────────────────────────────────────────────────────
     private BluetoothAdapter   bluetoothAdapter;
@@ -65,7 +63,6 @@ public class MainActivity extends AppCompatActivity
     private PairingManager     pairingManager;
     private AutoSessionStarter autoSessionStarter;
     private PairingController  pairingController;
-    private ChatManager        chatManager;
     private SessionStore       sessionStore;
     private ConnectionManager  connectionManager;
 
@@ -108,7 +105,6 @@ public class MainActivity extends AppCompatActivity
         bluetoothService = new BluetoothService(this);
         bluetoothService.setListener(btListener);
 
-        // Wire message queue → dispatcher → transport
         TransportSender transportSender = new TransportSender(bluetoothService);
         SendDispatcher.getInstance().init(transportSender);
 
@@ -121,7 +117,6 @@ public class MainActivity extends AppCompatActivity
                 pairingManager, bluetoothService, autoSessionStarter);
 
         setupButtonListeners();
-        setChatInputVisible(false);
         setPairingConfirmVisible(false);
         checkAndPromptBluetooth();
         requestRequiredPermissions();
@@ -150,22 +145,14 @@ public class MainActivity extends AppCompatActivity
                     btnServer.setEnabled(true);
                     btnClient.setEnabled(true);
                     setPairingConfirmVisible(false);
-                    setChatInputVisible(false);
                     SendDispatcher.getInstance().onDisconnected();
                     break;
-                case CONNECTING:
-                    tvStatus.setText("Connecting...");
-                    break;
-                case CONNECTED:
-                    tvStatus.setText("Connected");
-                    break;
-                case PAIRING:
-                    tvStatus.setText("Pairing...");
-                    break;
+                case CONNECTING:  tvStatus.setText("Connecting...");  break;
+                case CONNECTED:   tvStatus.setText("Connected");      break;
+                case PAIRING:     tvStatus.setText("Pairing...");     break;
                 case SESSION_READY:
                     tvStatus.setText("Paired ✅");
-                    log("✅ Session ready");
-                    // KEY: drain any messages queued before session was ready
+                    log("✅ Session ready — opening chat");
                     SendDispatcher.getInstance().onSessionReady();
                     break;
             }
@@ -198,7 +185,7 @@ public class MainActivity extends AppCompatActivity
     public void onSessionReady() {
         runOnUiThread(() -> {
             setPairingConfirmVisible(false);
-            initChatManager();
+            initChatAndLaunch();
         });
     }
 
@@ -213,7 +200,7 @@ public class MainActivity extends AppCompatActivity
     }
 
     // =========================================================================
-    // BluetoothListener — UI only
+    // BluetoothListener — UI updates
     // =========================================================================
 
     private final BluetoothListener btListener = new BluetoothListener() {
@@ -232,7 +219,6 @@ public class MainActivity extends AppCompatActivity
             runOnUiThread(() -> {
                 log("⚠️ Disconnected");
                 connectionManager.reset();
-                chatManager = null;
             });
         }
         @Override
@@ -242,23 +228,31 @@ public class MainActivity extends AppCompatActivity
     };
 
     // =========================================================================
-    // ChatCallback
+    // Chat init and launch
     // =========================================================================
 
-    private final ChatCallback chatCallback = new ChatCallback() {
-        @Override
-        public void onMessageReceived(String plaintext, long timestamp) {
-            runOnUiThread(() -> log("💬 Partner: " + plaintext));
-        }
-        @Override
-        public void onMessageSent(String plaintext) {
-            runOnUiThread(() -> log("💬 You: " + plaintext));
-        }
-        @Override
-        public void onError(String reason) {
-            runOnUiThread(() -> log("❌ Chat: " + reason));
-        }
-    };
+    private void initChatAndLaunch() {
+        // Create ChatManager and store in Application singleton
+        ChatManager chatManager = new ChatManager(this, sessionStore);
+        SideKeyApp.getInstance().setChatManager(chatManager);
+
+        // Wire incoming bytes to ChatManager after session is ready
+        bluetoothService.setCallback(new BluetoothCallback() {
+            @Override public void onConnected() { autoSessionStarter.onConnected(); }
+            @Override public void onMessage(byte[] data) {
+                ChatManager cm = SideKeyApp.getInstance().getChatManager();
+                if (cm == null || !cm.handleIncoming(data)) {
+                    pairingManager.handleIncoming(data);
+                }
+            }
+            @Override public void onDisconnected() { autoSessionStarter.onDisconnected(); }
+            @Override public void onError(String m) { autoSessionStarter.onError(m); }
+        });
+
+        // Launch ChatActivity
+        startActivity(new Intent(this, ChatActivity.class));
+        log("💬 Chat screen opened");
+    }
 
     // =========================================================================
     // Buttons
@@ -294,41 +288,6 @@ public class MainActivity extends AppCompatActivity
             setPairingConfirmVisible(false);
             connectionManager.reset();
         });
-
-        btnSend.setOnClickListener(v -> {
-            if (chatManager == null) { log("❌ Not paired yet"); return; }
-            String text = etMessage.getText().toString().trim();
-            if (text.isEmpty()) return;
-            chatManager.sendMessage(text);
-            etMessage.setText("");
-        });
-    }
-
-    // =========================================================================
-    // ChatManager init
-    // =========================================================================
-
-    private void initChatManager() {
-        if (chatManager != null) return;
-
-        // ChatManager(Context, SessionStore) — no BluetoothService
-        chatManager = new ChatManager(this, sessionStore);
-        chatManager.setCallback(chatCallback);
-        Log.d(TAG, "ChatManager initialised");
-        log("💬 Chat ready");
-        setChatInputVisible(true);
-
-        // Swap BT callback so chat messages route to ChatManager first
-        bluetoothService.setCallback(new BluetoothCallback() {
-            @Override public void onConnected()  { autoSessionStarter.onConnected(); }
-            @Override public void onMessage(byte[] data) {
-                if (!chatManager.handleIncoming(data)) {
-                    pairingManager.handleIncoming(data);
-                }
-            }
-            @Override public void onDisconnected() { autoSessionStarter.onDisconnected(); }
-            @Override public void onError(String m) { autoSessionStarter.onError(m); }
-        });
     }
 
     // =========================================================================
@@ -343,20 +302,12 @@ public class MainActivity extends AppCompatActivity
         btnClient  = findViewById(R.id.btnClient);
         btnConfirm = findViewById(R.id.btnConfirm);
         btnCancel  = findViewById(R.id.btnCancel);
-        etMessage  = findViewById(R.id.etMessage);
-        btnSend    = findViewById(R.id.btnSend);
     }
 
     private void setPairingConfirmVisible(boolean visible) {
         int v = (visible && isServer) ? View.VISIBLE : View.GONE;
         btnConfirm.setVisibility(v);
         btnCancel.setVisibility(v);
-    }
-
-    private void setChatInputVisible(boolean visible) {
-        int v = visible ? View.VISIBLE : View.GONE;
-        etMessage.setVisibility(v);
-        btnSend.setVisibility(v);
     }
 
     // =========================================================================
