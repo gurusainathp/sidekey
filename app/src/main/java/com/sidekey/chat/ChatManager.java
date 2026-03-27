@@ -3,41 +3,39 @@ package com.sidekey.chat;
 import android.content.Context;
 import android.util.Log;
 
-import com.sidekey.chat.bluetooth.BluetoothService;
 import com.sidekey.chat.crypto.MessageCipher;
 import com.sidekey.chat.crypto.SessionStore;
+import com.sidekey.chat.messaging.MessageQueue;
+import com.sidekey.chat.messaging.OutgoingMessage;
+import com.sidekey.chat.messaging.SendDispatcher;
 import com.sidekey.chat.model.ChatMessage;
 import com.sidekey.chat.utils.JsonUtil;
 
 /**
- * ChatManager — brain of the encrypted messaging flow.
+ * ChatManager — encrypts/decrypts messages and routes through MessageQueue.
  *
- * Uses SessionStore (symmetric session key) for all encryption.
- * No longer depends on PairingManager or raw key material.
+ * Send path:  plaintext → encrypt → JSON → enqueue → SendDispatcher
+ * Receive path: raw bytes → JSON parse → decrypt → ChatCallback
  *
- * Only active after pairing is confirmed and session is ready.
+ * ChatManager has NO reference to BluetoothService.
+ * All outgoing bytes go via MessageQueue → SendDispatcher → TransportSender → BT.
  */
 public class ChatManager {
 
     private static final String TAG = "SideKey-Chat";
 
-    private final BluetoothService bluetoothService;
-    private final MessageCipher    cipher;
-    private final SessionStore     sessionStore;
+    private final MessageCipher cipher;
+    private final SessionStore  sessionStore;
+    private ChatCallback        callback;
 
-    private ChatCallback callback;
-
-    public ChatManager(Context context,
-                       SessionStore sessionStore,
-                       BluetoothService bluetoothService) {
-        this.bluetoothService = bluetoothService;
-        this.sessionStore     = sessionStore;
-        this.cipher           = new MessageCipher(sessionStore);
+    public ChatManager(Context context, SessionStore sessionStore) {
+        this.sessionStore = sessionStore;
+        this.cipher       = new MessageCipher(sessionStore);
 
         if (sessionStore.isReady()) {
             Log.d(TAG, "ChatManager: session ready ✅");
         } else {
-            Log.e(TAG, "ChatManager: session NOT ready — messages will fail until session is derived");
+            Log.e(TAG, "ChatManager: session NOT ready — messages will be queued");
         }
     }
 
@@ -45,15 +43,12 @@ public class ChatManager {
         this.callback = callback;
     }
 
-    // -------------------------------------------------------------------------
-    // Send
-    // -------------------------------------------------------------------------
+    // ── Send ──────────────────────────────────────────────────────────────────
 
     public void sendMessage(String plaintext) {
         if (!sessionStore.isReady()) {
-            Log.e(TAG, "ChatManager: session not ready — cannot send");
-            if (callback != null) callback.onError("Session not ready — pair first");
-            return;
+            Log.e(TAG, "ChatManager: session not ready — message queued anyway");
+            // Still enqueue — dispatcher will send when session is ready
         }
 
         String encryptedPayload = cipher.encryptMessage(plaintext);
@@ -64,10 +59,7 @@ public class ChatManager {
         }
 
         ChatMessage message = new ChatMessage(
-                ChatMessage.TYPE_MSG,
-                encryptedPayload,
-                System.currentTimeMillis()
-        );
+                ChatMessage.TYPE_MSG, encryptedPayload, System.currentTimeMillis());
 
         String json = JsonUtil.toJson(message);
         if (json == null) {
@@ -75,21 +67,27 @@ public class ChatManager {
             return;
         }
 
-        bluetoothService.send(json.getBytes());
-        Log.d(TAG, "✅ Encrypted message sent");
+        // Enqueue — never send directly via BT
+        MessageQueue.getInstance().enqueue(
+                new OutgoingMessage(json.getBytes(), System.currentTimeMillis(), true));
+
+        // Notify dispatcher — it decides whether to send now or wait
+        SendDispatcher.getInstance().onNewMessage();
 
         if (callback != null) callback.onMessageSent(plaintext);
     }
 
-    // -------------------------------------------------------------------------
-    // Receive — returns true if consumed as a chat message
-    // -------------------------------------------------------------------------
+    // ── Receive ───────────────────────────────────────────────────────────────
 
+    /**
+     * Returns true if data was a chat message (consumed).
+     * Returns false if caller should route to PairingManager.
+     */
     public boolean handleIncoming(byte[] data) {
         String json = new String(data);
 
         ChatMessage message = JsonUtil.chatFromJson(json);
-        if (message == null) return false; // not a chat message
+        if (message == null) return false;
 
         switch (message.getType()) {
             case ChatMessage.TYPE_MSG:
@@ -104,13 +102,9 @@ public class ChatManager {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Internal
-    // -------------------------------------------------------------------------
-
     private void handleIncomingMessage(ChatMessage message) {
         if (!sessionStore.isReady()) {
-            Log.e(TAG, "handleIncomingMessage: session not ready — cannot decrypt");
+            Log.e(TAG, "handleIncomingMessage: session not ready");
             if (callback != null) callback.onError("Session not ready");
             return;
         }
