@@ -1,43 +1,53 @@
 package com.sidekey.chat.model;
 
 /**
- * Data model for a chat packet sent over Bluetooth.
+ * ChatMessage — structured message model.
  *
- * TYPE_MSG  → an encrypted message from sender to receiver
- * TYPE_ACK  → delivery acknowledgement (future use)
+ * This model holds PLAINTEXT content. It is never stored encrypted.
+ * Encryption/decryption happens at the transport boundary (MessageCipher),
+ * not inside this model.
  *
- * payload is Base64-encoded so it survives JSON serialisation.
- * The raw bytes it encodes are: nonce (24 bytes) + ciphertext.
+ * Wire format is handled by MessageSerializer / MessageParser.
  */
 public class ChatMessage {
 
-    public static final String TYPE_MSG = "MSG";
-    public static final String TYPE_ACK = "ACK";
+    private final MessageType type;
+    private final String      content;
+    private final long        timestamp;
+    private final String      senderId;   // nullable — for future multi-user support
 
-    private final String type;
-    private final String payload;    // Base64(nonce + ciphertext)
-    private final long   timestamp;
-
-    public ChatMessage(String type, String payload, long timestamp) {
+    // ── Full constructor ──────────────────────────────────────────────────────
+    public ChatMessage(MessageType type, String content, long timestamp, String senderId) {
         this.type      = type;
-        this.payload   = payload;
+        this.content   = content;
         this.timestamp = timestamp;
+        this.senderId  = senderId;
     }
 
-    public String getType() {
-        return type;
+    // ── Convenience — no senderId ─────────────────────────────────────────────
+    public ChatMessage(MessageType type, String content, long timestamp) {
+        this(type, content, timestamp, null);
     }
 
-    public String getPayload() {
-        return payload;
+    // ── Convenience — TEXT with current time ──────────────────────────────────
+    public static ChatMessage text(String content) {
+        return new ChatMessage(MessageType.TEXT, content, System.currentTimeMillis());
     }
 
-    public long getTimestamp() {
-        return timestamp;
+    // ── Convenience — SYSTEM message ─────────────────────────────────────────
+    public static ChatMessage system(String content) {
+        return new ChatMessage(MessageType.SYSTEM, content, System.currentTimeMillis());
     }
+
+    // ── Getters ───────────────────────────────────────────────────────────────
+    public MessageType getType()      { return type; }
+    public String      getContent()   { return content; }
+    public long        getTimestamp() { return timestamp; }
+    public String      getSenderId()  { return senderId; }
 
     @Override
     public String toString() {
-        return "ChatMessage{type=" + type + ", timestamp=" + timestamp + "}";
+        return "ChatMessage{type=" + type + ", content='" + content
+                + "', timestamp=" + timestamp + "}";
     }
 }

@@ -3,6 +3,7 @@ package com.sidekey.chat.utils;
 import android.util.Base64;
 
 import com.sidekey.chat.model.ChatMessage;
+import com.sidekey.chat.model.MessageType;
 import com.sidekey.chat.model.PairingMessage;
 
 import org.json.JSONObject;
@@ -74,7 +75,7 @@ public class JsonUtil {
         try {
             JSONObject obj = new JSONObject();
             obj.put(CHAT_TYPE,      message.getType());
-            obj.put(CHAT_PAYLOAD,   message.getPayload());
+            obj.put(CHAT_PAYLOAD,   message.getContent());
             obj.put(CHAT_TIMESTAMP, message.getTimestamp());
             return obj.toString();
         } catch (Exception e) {
@@ -93,7 +94,9 @@ public class JsonUtil {
             String payload   = obj.getString(CHAT_PAYLOAD);
             long   timestamp = obj.getLong(CHAT_TIMESTAMP);
 
-            return new ChatMessage(type, payload, timestamp);
+            MessageType messageType = MessageType.valueOf(type);
+
+            return new ChatMessage(messageType, payload, timestamp);
         } catch (Exception e) {
             return null;
         }
