@@ -1,50 +1,83 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+  Chat layout — keyboard-safe on all phones.
+
+  WHY THIS WORKS:
+  - No EdgeToEdge in ChatActivity (removed from Java)
+  - No ViewCompat inset listener on this root (removing that was the fix)
+  - windowSoftInputMode="adjustResize" in manifest shrinks the window
+  - ConstraintLayout reflows: RecyclerView shrinks, input stays at bottom
+  - The theme (not this layout) handles status bar / nav bar padding
+    when EdgeToEdge is disabled — system does it automatically
+
+  The inset listener was the bug: it added bottom padding = nav bar height
+  INSIDE the already-resized window, double-stacking the offset.
+-->
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/chatRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#121212">
+    android:background="#0F0F0F">
 
-    <!-- Message list fills available space -->
+    <!-- Messages — fills all space above the input row -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rvMessages"
-        android:layout_width="match_parent"
+        android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:padding="8dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp"
         android:clipToPadding="false"
-        android:scrollbars="none" />
+        android:scrollbars="none"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/inputDivider"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Divider -->
     <View
-        android:layout_width="match_parent"
+        android:id="@+id/inputDivider"
+        android:layout_width="0dp"
         android:layout_height="1dp"
-        android:background="#2A2A2A" />
+        android:background="#1E1E1E"
+        app:layout_constraintBottom_toTopOf="@id/inputRow"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Input row pinned to bottom -->
+    <!-- Input row — pinned to bottom, rises with keyboard via adjustResize -->
     <LinearLayout
-        android:layout_width="match_parent"
+        android:id="@+id/inputRow"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="8dp"
         android:gravity="center_vertical"
-        android:background="#1A1A1A">
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:background="#0F0F0F"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
         <EditText
             android:id="@+id/etChatInput"
             android:layout_width="0dp"
-            android:layout_height="44dp"
+            android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:minHeight="44dp"
             android:hint="Message..."
             android:textColor="#FFFFFF"
-            android:textColorHint="#666666"
+            android:textColorHint="#555555"
             android:textSize="15sp"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
             android:background="@drawable/bg_input_field"
             android:inputType="textMultiLine|textCapSentences"
             android:imeOptions="actionSend"
-            android:maxLines="3"
+            android:maxLines="4"
             android:layout_marginEnd="8dp" />
 
         <ImageButton
@@ -54,8 +87,9 @@
             android:src="@android:drawable/ic_menu_send"
             android:background="@drawable/bg_send_button"
             android:contentDescription="Send"
-            android:tint="#FFFFFF" />
+            android:tint="#FFFFFF"
+            android:padding="10dp" />
 
     </LinearLayout>
 
-</LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>

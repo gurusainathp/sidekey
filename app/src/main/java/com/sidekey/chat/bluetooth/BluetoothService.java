@@ -16,21 +16,7 @@ import java.io.OutputStream;
 
 /**
  * BluetoothService — raw transport layer only.
- *
- * Responsibilities:
- *   - Manage RFCOMM socket lifecycle (AcceptThread / ConnectThread)
- *   - Frame outgoing bytes via FrameEncoder
- *   - Decode incoming frames via FrameDecoder
- *   - Fire BluetoothListener (UI) and BluetoothCallback (logic) on events
- *
- * BluetoothService knows NOTHING about:
- *   - Crypto
- *   - Message queue
- *   - SendDispatcher
- *   - Pairing
- *   - Session
- *
- * It only moves bytes. SendDispatcher decides WHEN to send.
+ * No BT name branding. Just sockets, frames, and callbacks.
  */
 public class BluetoothService {
 
@@ -45,7 +31,7 @@ public class BluetoothService {
     private ConnectThread   connectThread;
     private ConnectedThread connectedThread;
 
-    private volatile boolean pairingInProgress = false;
+    private volatile String connectedDeviceAddress = null;
 
     public BluetoothService(Context context) {
         this.adapter = BluetoothAdapter.getDefaultAdapter();
@@ -53,11 +39,7 @@ public class BluetoothService {
 
     public void setListener(BluetoothListener listener) { this.listener = listener; }
     public void setCallback(BluetoothCallback callback) { this.callback = callback; }
-    public void setPairingInProgress(boolean b)         { this.pairingInProgress = b; }
-
-    public boolean isBluetoothEnabled() {
-        return adapter != null && adapter.isEnabled();
-    }
+    public String getConnectedDeviceAddress()           { return connectedDeviceAddress; }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -74,13 +56,9 @@ public class BluetoothService {
         cancelConnectThread();
         connectThread = new ConnectThread(device);
         connectThread.start();
-        Log.d(TAG, "Connecting to: " + device.getName() + " [" + device.getAddress() + "]");
+        Log.d(TAG, "Connecting to: " + getDeviceName(device) + " [" + device.getAddress() + "]");
     }
 
-    /**
-     * Sends payload as a length-prefixed frame.
-     * Called by TransportSender only — never by ChatManager directly.
-     */
     public void send(byte[] payload) {
         ConnectedThread thread;
         synchronized (this) { thread = connectedThread; }
@@ -96,17 +74,19 @@ public class BluetoothService {
         cancelAcceptThread();
         cancelConnectThread();
         cancelConnectedThread();
+        connectedDeviceAddress = null;
         Log.d(TAG, "BluetoothService stopped");
     }
 
-    // ── Handoff ───────────────────────────────────────────────────────────────
+    // ── Internal handoff ──────────────────────────────────────────────────────
 
     private synchronized void startConnectedThread(BluetoothSocket socket) {
         cancelConnectedThread();
+        connectedDeviceAddress = socket.getRemoteDevice().getAddress();
         connectedThread = new ConnectedThread(socket);
         connectedThread.start();
         BluetoothDevice remote = socket.getRemoteDevice();
-        Log.d(TAG, "ConnectedThread started for: " + remote.getName());
+        Log.d(TAG, "ConnectedThread started for: " + getDeviceName(remote));
         if (listener != null) listener.onConnected(remote);
         if (callback != null) callback.onConnected();
     }
@@ -125,6 +105,10 @@ public class BluetoothService {
     private void notifyError(String msg) {
         if (listener != null) listener.onError(msg);
         if (callback != null) callback.onError(msg);
+    }
+    private String getDeviceName(BluetoothDevice device) {
+        try { String n = device.getName(); return n != null ? n : device.getAddress(); }
+        catch (SecurityException e) { return device.getAddress(); }
     }
 
     // ── AcceptThread ──────────────────────────────────────────────────────────
@@ -155,9 +139,7 @@ public class BluetoothService {
                 return;
             }
             startConnectedThread(socket);
-            try { serverSocket.close(); } catch (IOException e) {
-                Log.w(TAG, "AcceptThread: serverSocket.close() — " + e.getMessage());
-            }
+            try { serverSocket.close(); } catch (IOException ignored) {}
             synchronized (BluetoothService.this) {
                 if (acceptThread == this) acceptThread = null;
             }
@@ -226,7 +208,7 @@ public class BluetoothService {
                 tmpIn  = socket.getInputStream();
                 tmpOut = socket.getOutputStream();
             } catch (IOException e) {
-                Log.e(TAG, "ConnectedThread: stream setup failed — " + e.getMessage());
+                Log.e(TAG, "ConnectedThread: stream setup — " + e.getMessage());
                 notifyError("Stream setup failed: " + e.getMessage());
             }
             inputStream  = tmpIn;
@@ -241,10 +223,10 @@ public class BluetoothService {
                     Log.d(TAG, "BT: frame received len=" + payload.length);
                     if (listener != null) listener.onDataReceived(payload);
                     if (callback != null) callback.onMessage(payload);
-                    // ← SendDispatcher is NOT called here. Receive ≠ trigger send.
                 } catch (IOException e) {
                     if (!Thread.currentThread().isInterrupted()) {
                         Log.e(TAG, "ConnectedThread: read error — " + e.getMessage());
+                        connectedDeviceAddress = null;
                         if (listener != null) listener.onDisconnected();
                         if (callback != null) callback.onDisconnected();
                     }
@@ -257,11 +239,9 @@ public class BluetoothService {
         void write(byte[] payload) {
             try {
                 byte[] frame = FrameEncoder.encode(payload);
-                Log.d(TAG, "BT: sending frame len=" + frame.length);
                 outputStream.write(frame);
                 outputStream.flush();
-                // ← SendDispatcher is NOT called here.
-                // Dispatcher decides WHEN to send. BT just executes the write.
+                Log.d(TAG, "BT: sent frame len=" + frame.length);
             } catch (IOException e) {
                 Log.e(TAG, "ConnectedThread: write failed — " + e.getMessage());
                 notifyError("Send failed: " + e.getMessage());

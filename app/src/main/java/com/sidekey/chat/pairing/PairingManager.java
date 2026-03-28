@@ -8,47 +8,49 @@ import com.sidekey.chat.crypto.SecureStorage;
 import com.sidekey.chat.model.PairingMessage;
 import com.sidekey.chat.model.PairingState;
 import com.sidekey.chat.model.UserKey;
+import com.sidekey.chat.storage.TrustedDeviceStore;
 import com.sidekey.chat.utils.JsonUtil;
 
 /**
  * PairingManager — brain of the pairing flow.
  *
- * Secure flow:
- *   1. Receive partner key → store in memory as PairingState (NOT saved yet)
- *   2. Show fingerprint to user for visual verification
- *   3. Server confirms → save partner key, send ACK, derive session
- *   4. Client receives ACK → save partner key, derive session (no button)
+ * After confirmation, saves the device to TrustedDeviceStore so
+ * it appears as known on future sessions.
  */
 public class PairingManager {
 
     private static final String TAG = "SideKey-Pairing";
 
-    private final KeyManager    keyManager;
-    private final SecureStorage storage;
+    private final KeyManager        keyManager;
+    private final SecureStorage     storage;
+    private final TrustedDeviceStore trustedStore;
 
     private PairingCallback callback;
     private PairingState    pendingState;
 
+    // Set externally when BT connects — needed for TrustedDeviceStore
+    private String connectedDeviceAddress;
+    private String connectedDeviceName;
+
     public PairingManager(Context context) {
-        this.keyManager = new KeyManager(context);
-        this.storage    = new SecureStorage(context);
+        this.keyManager   = new KeyManager(context);
+        this.storage      = new SecureStorage(context);
+        this.trustedStore = new TrustedDeviceStore(context);
         this.keyManager.init();
     }
 
-    public void setCallback(PairingCallback callback) {
-        this.callback = callback;
+    public void setCallback(PairingCallback callback) { this.callback = callback; }
+
+    public void setConnectedDevice(String address, String name) {
+        this.connectedDeviceAddress = address;
+        this.connectedDeviceName    = name;
     }
 
-    // -------------------------------------------------------------------------
-    // Build PAIR message
-    // -------------------------------------------------------------------------
+    // ── PAIR message ──────────────────────────────────────────────────────────
 
     public byte[] createOwnMessage() {
         byte[] publicKey = keyManager.getPublicKey();
-        if (publicKey == null) {
-            Log.e(TAG, "createOwnMessage: public key null");
-            return null;
-        }
+        if (publicKey == null) { Log.e(TAG, "createOwnMessage: null key"); return null; }
         PairingMessage msg = new PairingMessage(
                 PairingMessage.TYPE_PAIR, publicKey, System.currentTimeMillis());
         String json = JsonUtil.toJson(msg);
@@ -57,9 +59,7 @@ public class PairingManager {
         return json.getBytes();
     }
 
-    // -------------------------------------------------------------------------
-    // Handle raw bytes from Bluetooth
-    // -------------------------------------------------------------------------
+    // ── Incoming ──────────────────────────────────────────────────────────────
 
     public void handleIncoming(byte[] data) {
         String json = new String(data);
@@ -76,16 +76,23 @@ public class PairingManager {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Server confirms — save key
-    // -------------------------------------------------------------------------
+    // ── Server confirm ────────────────────────────────────────────────────────
 
     public void confirmPairing() {
         if (pendingState == null) { Log.e(TAG, "confirmPairing: no pending state"); return; }
         pendingState.confirm();
         storage.savePartnerPublicKey(pendingState.getPartnerKey());
+
+        // Save to trusted device store
+        if (connectedDeviceAddress != null) {
+            trustedStore.saveTrustedDevice(
+                    connectedDeviceName != null ? connectedDeviceName : connectedDeviceAddress,
+                    connectedDeviceAddress,
+                    pendingState.getFingerprint()
+            );
+        }
+
         Log.d(TAG, "✅ Pairing confirmed — partner key saved");
-        Log.d(TAG, "Fingerprint: " + pendingState.getFingerprint());
         pendingState = null;
         if (callback != null) callback.onPairingComplete();
     }
@@ -96,9 +103,7 @@ public class PairingManager {
         pendingState = null;
     }
 
-    // -------------------------------------------------------------------------
-    // Build ACK
-    // -------------------------------------------------------------------------
+    // ── ACK ───────────────────────────────────────────────────────────────────
 
     public byte[] createAckMessage() {
         byte[] publicKey = keyManager.getPublicKey();
@@ -109,9 +114,7 @@ public class PairingManager {
         return json != null ? json.getBytes() : null;
     }
 
-    // -------------------------------------------------------------------------
-    // State queries
-    // -------------------------------------------------------------------------
+    // ── State queries ─────────────────────────────────────────────────────────
 
     public boolean isPaired()  { return storage.isPaired(); }
     public boolean isPending() { return pendingState != null; }
@@ -130,10 +133,6 @@ public class PairingManager {
         return pendingState != null ? pendingState.getFingerprint() : null;
     }
 
-    // -------------------------------------------------------------------------
-    // Key material getters for ChatManager / SessionManager
-    // -------------------------------------------------------------------------
-
     public byte[] getOwnPrivateKey() {
         try { return keyManager.getPrivateKey(); }
         catch (Exception e) { Log.e(TAG, "getOwnPrivateKey: " + e.getMessage()); return null; }
@@ -143,9 +142,7 @@ public class PairingManager {
         return storage.getPartnerPublicKey();
     }
 
-    // -------------------------------------------------------------------------
-    // Internal
-    // -------------------------------------------------------------------------
+    // ── Internal ──────────────────────────────────────────────────────────────
 
     private void handlePairMessage(PairingMessage message) {
         byte[] partnerKey = message.getPublicKey();
@@ -154,29 +151,32 @@ public class PairingManager {
             if (callback != null) callback.onPairingError("Partner sent invalid key");
             return;
         }
-
         UserKey partnerUserKey = new UserKey(partnerKey, message.getTimestamp());
         String fingerprint = partnerUserKey.getFingerprint();
-
-        // Store pending — NOT saved to disk yet
         pendingState = new PairingState(partnerKey, message.getTimestamp(), fingerprint);
-
         Log.d(TAG, "Own fingerprint:     " + getOwnFingerprint());
         Log.d(TAG, "Partner fingerprint: " + fingerprint);
-        Log.d(TAG, "→ Both should match on the other phone");
-
         if (callback != null) callback.onPartnerKeyReceived(fingerprint);
     }
 
     private void handleAckMessage(PairingMessage message) {
-        // ACK from server means server confirmed — client now saves partner key
-        // The partner key was received earlier in handlePairMessage as pendingState
+        // Client: server confirmed — save partner key from pending state
         if (pendingState != null) {
             storage.savePartnerPublicKey(pendingState.getPartnerKey());
+
+            // Save trusted device on client side too
+            if (connectedDeviceAddress != null) {
+                trustedStore.saveTrustedDevice(
+                        connectedDeviceName != null ? connectedDeviceName : connectedDeviceAddress,
+                        connectedDeviceAddress,
+                        pendingState.getFingerprint()
+                );
+            }
+
             Log.d(TAG, "✅ Client: partner key saved after ACK");
             pendingState = null;
         }
-        Log.d(TAG, "ACK received — notifying for session derivation");
+        Log.d(TAG, "ACK received — session derivation next");
         if (callback != null) {
             callback.onAckReceived();
             callback.onPairingComplete();

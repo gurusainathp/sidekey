@@ -1,11 +1,8 @@
-package com.sidekey.chat.ui;
+package com.sidekey.chat.pairing;
 
-import android.content.Context;
 import android.util.Log;
 
 import com.sidekey.chat.bluetooth.BluetoothService;
-import com.sidekey.chat.pairing.AutoSessionStarter;
-import com.sidekey.chat.pairing.PairingManager;
 
 /**
  * PairingController — bridge between UI confirm/cancel and PairingManager.

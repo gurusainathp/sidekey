@@ -2,10 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Legacy Bluetooth (Android 11 and below) -->
-    <uses-permission android:name="android.permission.BLUETOOTH"        android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"  android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"   android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH"             android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"       android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"  />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
 
     <!-- Modern Bluetooth (Android 12+) -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
@@ -24,7 +24,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Sidekey">
 
-        <!-- Pairing screen -->
+        <!-- Entry point — initialises services and routes immediately -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -33,6 +33,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Device discovery and connection -->
+        <activity
+            android:name=".ui.device.DeviceListActivity"
+            android:exported="false" />
+
+        <!-- Fingerprint verification -->
+        <activity
+            android:name=".ui.pairing.PairingActivity"
+            android:exported="false" />
 
         <!-- Chat screen -->
         <activity

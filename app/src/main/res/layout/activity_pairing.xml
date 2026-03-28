@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0F0F0F">
+
+    <!-- Lock icon — centered, takes up visual weight without fixed top margin -->
+    <TextView
+        android:id="@+id/tvLock"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="🔐"
+        android:textSize="52sp"
+        android:layout_marginBottom="16dp"
+        app:layout_constraintBottom_toTopOf="@id/tvPairingStatus"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintVertical_chainStyle="packed"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_bias="0.3" />
+
+    <TextView
+        android:id="@+id/tvPairingStatus"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="Connecting..."
+        android:textSize="18sp"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:layout_marginBottom="24dp"
+        app:layout_constraintBottom_toTopOf="@id/fingerprintCard"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Fingerprint card -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/fingerprintCard"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:layout_marginBottom="24dp"
+        app:cardBackgroundColor="#1A1A1A"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="0dp"
+        app:strokeColor="#2A2A2A"
+        app:strokeWidth="1dp"
+        app:layout_constraintBottom_toTopOf="@id/btnPairingConfirm"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="KEY FINGERPRINTS"
+                android:textSize="10sp"
+                android:letterSpacing="0.15"
+                android:textColor="#555555"
+                android:layout_marginBottom="14dp" />
+
+            <TextView
+                android:id="@+id/tvOwnFingerprint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Your key: ----"
+                android:textSize="14sp"
+                android:textColor="#00E676"
+                android:fontFamily="monospace"
+                android:layout_marginBottom="10dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#2A2A2A"
+                android:layout_marginBottom="10dp" />
+
+            <TextView
+                android:id="@+id/tvPartnerFingerprint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Partner key: ----"
+                android:textSize="14sp"
+                android:textColor="#64B5F6"
+                android:fontFamily="monospace"
+                android:layout_marginBottom="14dp"
+                android:visibility="invisible" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Both values must match on both devices"
+                android:textSize="11sp"
+                android:textColor="#555555" />
+
+        </LinearLayout>
+
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- Confirm button — server only, gone by default -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnPairingConfirm"
+        android:layout_width="0dp"
+        android:layout_height="52dp"
+        android:text="Fingerprints Match — Confirm"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:layout_marginBottom="10dp"
+        app:backgroundTint="#1B5E20"
+        app:cornerRadius="14dp"
+        app:layout_constraintBottom_toTopOf="@id/btnPairingCancel"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:visibility="gone" />
+
+    <!-- Cancel button — server only, gone by default -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnPairingCancel"
+        android:layout_width="0dp"
+        android:layout_height="52dp"
+        android:text="Don't Match — Cancel"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:layout_marginBottom="24dp"
+        app:backgroundTint="#B71C1C"
+        app:cornerRadius="14dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:visibility="gone" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
